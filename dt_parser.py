@@ -1,7 +1,8 @@
 from optparse import OptionParser
 import torch
 import utils
-import dt_model
+from dt_model import dependency_tagging_model
+
 
 
 
@@ -31,9 +32,14 @@ if __name__ == '__main__':
     parser.add_option("--activation", type="string", dest="activation", default="tanh")
     parser.add_option("--lstmlayers", type="int", dest="lstm_layers", default=2)
     parser.add_option("--lstmdims", type="int", dest="lstm_dims", default=125)
+    parser.add_option("--distdim",type = "int",dest="dist_dim",default = 6)
+    parser.add_option("--batch",type = "int",dest="batchsize",default = 10)
 
     parser.add_option("--predict", action="store_true", dest="predictFlag", default=False)
-    parser.add_options("--taglevel", type="int",dest="tag_level", default =100)
+    parser.add_option("--taglevel", type="int",dest="tag_level", default =100)
+    parser.add_option("--fdim",type="int",dest="feat_param_dims",default = 1)
+
+    parser.add_option("--mode",action="store_false",dest="subtag_use",default = True)
 
     (options, args) = parser.parse_args()
     torch.set_num_threads(options.nthreads)
@@ -45,7 +51,11 @@ if __name__ == '__main__':
         None
 
     else:
-        None
-        words, w2i, pos ,tagCount= utils.vocab(options.conll_train)
+        words, w2i, pos ,tagCount,sentences = utils.read_data(options.conll_train)
         tag_map = utils.round_tag(tagCount,options.tag_level)
-        dep_tagging_model = dt_model.dependency_tagging_model(words,pos,w2i,tag_map,options)
+        flookup = utils.traverse_feat(options.conll_train,tag_map)
+        dep_tagging_model = dependency_tagging_model(words,pos,w2i,tag_map,flookup,sentences,options)
+        best_trees = {}
+        for epoch in xrange(options.epochs):
+            print 'Starting epoch', epoch
+            dep_tagging_model.train(sentences,best_trees)
