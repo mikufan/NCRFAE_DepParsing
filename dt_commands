@@ -1,0 +1,1 @@
+python dt_parser.py --train data/toy_test --model output/neuralfirstorder.model1 --epoch 5 --paramdec paramdec.pickle1 --predict
