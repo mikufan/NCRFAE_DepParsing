@@ -5,7 +5,6 @@ import numpy as np
 import torch
 from torch.nn.init import *
 import param
-from memory_profiler import profile
 import utils
 
 

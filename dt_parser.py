@@ -32,7 +32,7 @@ if __name__ == '__main__':
 
     parser.add_option("--epochs", type="int", dest="epochs", default=30)
     parser.add_option("--numthread", type="int", dest="nthreads", default=1)
-    parser.add_option("--hidden", type="int", dest="hidden_units", default=100)
+    parser.add_option("--hidden", type="int", dest="hidden_units", default=50)
 
     parser.add_option("--optim", type="string", dest="optim", default='adam')
     parser.add_option("--lr", type="float", dest="learning_rate", default=0.1)
@@ -40,7 +40,7 @@ if __name__ == '__main__':
     parser.add_option("--activation", type="string", dest="activation", default="tanh")
     parser.add_option("--lstmlayers", type="int", dest="lstm_layers", default=2)
     parser.add_option("--lstmdims", type="int", dest="lstm_dims", default=125)
-    parser.add_option("--distdim", type="int", dest="dist_dim", default=1)
+    parser.add_option("--distdim", type="int", dest="dist_dim", default=5)
     parser.add_option("--batch", type="int", dest="batchsize", default=100)
     parser.add_option("--tag_num",type="int",dest="tag_num",default = 10)
 

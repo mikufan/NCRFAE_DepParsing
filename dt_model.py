@@ -11,7 +11,7 @@ import eisner_parser
 import utils
 import time
 import psutil
-from memory_profiler import profile
+
 
 
 def Parameter(shape=None, init=xavier_uniform):
