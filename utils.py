@@ -88,8 +88,14 @@ class data_sentence:
         word_list = list()
         pos_list = list()
         for entry in self.entries:
-            word_list.append(words[entry.norm])
-            pos_list.append(pos[entry.pos])
+            if entry.norm in words.keys():
+                word_list.append(words[entry.norm])
+            else:
+                word_list.append(words['<UNKNOWN>'])
+            if entry.pos in pos.keys():
+                pos_list.append(pos[entry.pos])
+            else:
+                pos_list.append(pos['<UNKNOWN>'])
         return word_list, pos_list
 
     def __str__(self):
@@ -172,8 +178,8 @@ def read_data(conll_path, isPredict):
                 s_counter += 1
         wordsCount['<UNKNOWN>'] = 0
         posCount['<UNKNOWN-POS>'] = 0
-        return wordsCount, {w: i for i, w in enumerate(wordsCount.keys())}, {p: i for i, p in enumerate(
-            posCount.keys())}, posCount, sentences
+        return {w: i for i, w in enumerate(wordsCount.keys())}, {p: i for i, p in enumerate(
+            posCount.keys())}, sentences
     else:
         with open(conll_path, 'r') as conllFP:
             s_counter = 0
@@ -202,10 +208,12 @@ def read_conll(fh):
         yield tokens
 
 
-def eval(predicted, gold):
+def eval(predicted, gold, test_path):
     correct_counter = 0
     total_counter = 0
-    for ps, gs in zip(predicted, gold):
+    for s in range(len(gold)):
+        ps = predicted[s][0]
+        gs = gold[s]
         for i, e in enumerate(gs.entries):
             if i == 0:
                 continue
@@ -214,6 +222,25 @@ def eval(predicted, gold):
             total_counter += 1
     accuracy = float(correct_counter) / total_counter
     print 'UAS is ' + str(accuracy * 100) + '%'
+    f_w = open(test_path, 'w')
+    for s, sentence in enumerate(gold):
+        for entry in sentence.entries:
+            f_w.write(str(entry.norm) + ' ')
+        f_w.write('\n')
+        for entry in sentence.entries:
+            f_w.write(str(entry.pos) + ' ')
+        f_w.write('\n')
+        for i in range(len(sentence.entries)):
+            f_w.write(str(sentence.entries[i].parent_id) + ' ')
+        f_w.write('\n')
+        for i in range(len(sentence.entries)):
+            f_w.write(str(int(predicted[s][1][i])) + ' ')
+        f_w.write('\n')
+        for i in range(len(sentence.entries)):
+            f_w.write(str(int(predicted[s][0][i])) + ' ')
+        f_w.write('\n')
+        f_w.write('\n')
+    f_w.close()
 
 
 def write_conll(fn, conll_gen):
@@ -252,8 +279,7 @@ def round_tag(posCount, tag_level=0):
     return tag_map
 
 
-
-def construct_batch_data(data_list,batch_size):
+def construct_batch_data(data_list, batch_size):
     data_list.sort(key=lambda x: len(x[0]))
     grouped = [list(g) for k, g in groupby(data_list, lambda s: len(s[0]))]
     batch_data = []
@@ -262,7 +288,8 @@ def construct_batch_data(data_list,batch_size):
         batch_data.extend(sub_batch_data)
     return batch_data
 
-def get_batch_data(grouped_data,batch_size):
+
+def get_batch_data(grouped_data, batch_size):
     batch_data = []
     len_datas = len(grouped_data)
     num_batch = len_datas // batch_size
@@ -275,10 +302,15 @@ def get_batch_data(grouped_data,batch_size):
         batch_data.append(grouped_data[start_idx:end_idx])
     return batch_data
 
-def list2Variable(list):
+
+def list2Variable(list, gpu_flag):
     list = torch.LongTensor(list)
-    list_var = autograd.Variable(list)
+    if gpu_flag == -1:
+        list_var = autograd.Variable(list)
+    else:
+        list_var = autograd.Variable(list).cuda()
     return list_var
+
 
 def memoize(func):
     mem = {}
@@ -291,10 +323,12 @@ def memoize(func):
 
     return helper
 
+
 def logaddexp(a, b):
     max_ab = torch.max(a, b)
     max_ab[~isfinite(max_ab)] = 0
     return torch.log(torch.add(torch.exp(a - max_ab), torch.exp(b - max_ab))) + max_ab
+
 
 def isfinite(a):
     return (a != np.inf) & (a != -np.inf) & (a != np.nan) & (a != -np.nan)
@@ -311,6 +345,7 @@ def logsumexp(a, axis=None):
         res.squeeze_(axis)
     return res
 
+
 def amax(a, axis=None, keepdim=False):
     if isinstance(axis, tuple):
         for x in reversed(axis):
@@ -319,6 +354,7 @@ def amax(a, axis=None, keepdim=False):
         a, index = a.max(axis, keepdim=True)
     return a
 
+
 def asum(a, axis=None, keepdim=False):
     if isinstance(axis, tuple):
         for x in reversed(axis):
@@ -326,6 +362,7 @@ def asum(a, axis=None, keepdim=False):
     else:
         a = a.sum(axis, keepdim=keepdim)
     return a
+
 
 @memoize
 def constituent_index(sentence_length):
@@ -353,7 +390,7 @@ def constituent_index(sentence_length):
     kjcs = [[] for _ in range(counter_id)]
     kjis = [[] for _ in range(counter_id)]
 
-    for l in range(1,sentence_length):
+    for l in range(1, sentence_length):
         for i in range(sentence_length - l):
             j = i + l
             for dir in range(2):
@@ -364,7 +401,7 @@ def constituent_index(sentence_length):
                             # two complete spans to form an incomplete span
                             idli = span_2_id[(i, k, dir + 1)]
                             ikis[ids].append(idli)
-                            idri = span_2_id[(k+1, j, dir)]
+                            idri = span_2_id[(k + 1, j, dir)]
                             kjis[ids].append(idri)
                             # one complete span,one incomplete span to form a complete span
                             idlc = span_2_id[(i, k, dir)]
@@ -377,7 +414,7 @@ def constituent_index(sentence_length):
                             # two complete spans to form an incomplete span
                             idli = span_2_id[(i, k, dir)]
                             ikis[ids].append(idli)
-                            idri = span_2_id[(k+1, j, dir - 1)]
+                            idri = span_2_id[(k + 1, j, dir - 1)]
                             kjis[ids].append(idri)
                         if k > i:
                             # one incomplete span,one complete span to form a complete span
@@ -390,7 +427,8 @@ def constituent_index(sentence_length):
 
     return span_2_id, id_2_span, ijss, ikcs, ikis, kjcs, kjis, basic_span
 
-def get_index(b,id):
-    id_a = id//b
-    id_b = id%b
-    return(id_a,id_b)
+
+def get_index(b, id):
+    id_a = id // b
+    id_b = id % b
+    return (id_a, id_b)
