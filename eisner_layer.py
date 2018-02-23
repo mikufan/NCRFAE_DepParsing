@@ -37,8 +37,10 @@ class eisner_layer(autograd.Function):
 
         counts = self.inside_table[1] + self.outside_table[1]
         pseudo_count = torch.DoubleTensor(self.batch_size, self.sentence_length, self.sentence_length, self.tag_num,
-                                         self.tag_num)
+                                          self.tag_num)
         pseudo_count.fill_(LOGZERO)
+        if torch.cuda.is_available():
+            pseudo_count = pseudo_count.cuda()
         span_2_id, id_2_span, ijss, ikcs, ikis, kjcs, kjis, basic_span = utils.constituent_index(self.sentence_length)
 
         for l in range(self.sentence_length):
@@ -47,11 +49,10 @@ class eisner_layer(autograd.Function):
                     span_id = span_2_id.get((l, r, dir))
                     if span_id is not None:
                         if dir == 0:
-                            pseudo_count[:, r, l, :, :] = counts[:, span_id, :, :].permute(0,2,1)
+                            pseudo_count[:, r, l, :, :] = counts[:, span_id, :, :].permute(0, 2, 1)
                         else:
                             pseudo_count[:, l, r, :, :] = counts[:, span_id, :, :]
-        if torch.cuda.is_available():
-            pseudo_count = pseudo_count.cuda()
+
         mius = pseudo_count - self.partition_score.contiguous().view(self.batch_size, 1, 1, 1, 1)
         diff = torch.exp(mius)
         # if self.mask is not None:
@@ -60,9 +61,9 @@ class eisner_layer(autograd.Function):
 
     def batch_inside(self, crf_scores):
         inside_complete_table = torch.DoubleTensor(self.batch_size, self.sentence_length * self.sentence_length * 2,
-                                                  self.tag_num)
+                                                   self.tag_num)
         inside_incomplete_table = torch.DoubleTensor(self.batch_size, self.sentence_length * self.sentence_length * 2,
-                                                    self.tag_num, self.tag_num)
+                                                     self.tag_num, self.tag_num)
         if torch.cuda.is_available():
             inside_complete_table = inside_complete_table.cuda()
             inside_incomplete_table = inside_incomplete_table.cuda()
@@ -121,9 +122,9 @@ class eisner_layer(autograd.Function):
         inside_complete_table = inside_table[0]
         inside_incomplete_table = inside_table[1]
         outside_complete_table = torch.DoubleTensor(self.batch_size, self.sentence_length * self.sentence_length * 2,
-                                                   self.tag_num)
+                                                    self.tag_num)
         outside_incomplete_table = torch.DoubleTensor(self.batch_size, self.sentence_length * self.sentence_length * 2,
-                                                     self.tag_num, self.tag_num)
+                                                      self.tag_num, self.tag_num)
         if torch.cuda.is_available():
             outside_complete_table = outside_complete_table.cuda()
             outside_incomplete_table = outside_incomplete_table.cuda()
@@ -137,7 +138,7 @@ class eisner_layer(autograd.Function):
         complete_span_used = set()
         incomplete_span_used = set()
         complete_span_used.add(root_id)
-        root_flag = False
+
         for ij in reversed(ijss):
             (l, r, dir) = id_2_span[ij]
             # complete span consists of one incomplete span and one complete span
