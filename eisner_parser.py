@@ -283,7 +283,7 @@ def batch_parse(batch_scores):
             span_i = ik_ci + kj_ci + batch_scores[:, r, l, :, :].swapaxes(1, 2).reshape(batch_size, 1, tag_num, tag_num)
         else:
             span_i = ik_ci + kj_ci + batch_scores[:, l, r, :, :].reshape(batch_size, 1, tag_num, tag_num)
-        max_score = np.max(span_i, axis=1)
+
         incomplete_table[:, ij, :, :] = np.max(span_i, axis=1)
         max_idx = np.argmax(span_i, axis=1)
         incomplete_backtrack[:, ij, :, :] = max_idx
@@ -299,11 +299,8 @@ def batch_parse(batch_scores):
             kj_cc = complete_table[:, kjcs[ij], :].reshape(batch_size, num_kc, 1, tag_num)
             span_c = ik_ic + kj_cc
             span_c = span_c.swapaxes(2,3).reshape(batch_size, num_kc * tag_num, tag_num)
-        max_score = np.max(span_c, axis=1)
         complete_table[:, ij, :] = np.max(span_c, axis=1)
         max_idx = np.argmax(span_c, axis=1)
-        # complete_backtrack[:, ij, :, 0] = utils.get_index(tag_num, r)[0]
-        # complete_backtrack[:, ij, :, 1] = utils.get_index(tag_num, r)[1]
         complete_backtrack[:, ij, :] = max_idx
 
     tags = np.zeros((batch_size, sentence_length)).astype(int)

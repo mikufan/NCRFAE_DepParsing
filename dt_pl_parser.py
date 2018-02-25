@@ -24,28 +24,29 @@ if __name__ == '__main__':
                       default="output/neuralfirstorder.model")
     parser.add_option("--wembedding", type="int", dest="wembedding_dim", default=100)
     parser.add_option("--pembedding", type="int", dest="pembedding_dim", default=25)
-    parser.add_option("--tembedding", type="int", dest="tembedding_dim", default=50)
     parser.add_option("--hidden", type="int", dest="hidden_dim", default=50)
     parser.add_option("--nLayer", type="int", dest="n_layer", default=1)
     parser.add_option("--epochs", type="int", dest="epochs", default=10)
     parser.add_option("--tag_num", type="int", dest="tag_num", default=4)
-    parser.add_option("--tag_dim", type="int", dest="tag_dim", default=20)
+    parser.add_option("--tag_dim", type="int", dest="tag_dim", default=5)
+    parser.add_option("--dist_dim",type="int",dest="dist_dim",default=5)
+    parser.add_option("--use_dir",action="store_true",dest="dir_flag",default=False)
+    parser.add_option("--dist_num",type="int",dest="dist_num",default=5)
 
     parser.add_option("--optim", type="string", dest="optim", default='adam')
     parser.add_option("--lr", type="float", dest="learning_rate", default=0.01)
     parser.add_option("--outdir", type="string", dest="output", default="output")
-    parser.add_option("--activation", type="string", dest="activation", default="tanh")
-    parser.add_option("--lstmlayers", type="int", dest="lstm_layers", default=2)
+
     parser.add_option("--lstmdims", type="int", dest="lstm_dims", default=125)
     parser.add_option("--distdim", type="int", dest="dist_dim", default=5)
-
+    parser.add_option("--dropout",type="float",dest="dropout_ratio",default=0.25)
     parser.add_option("--trans_hidden", type="int", dest="trans_hidden", default=50)
 
     parser.add_option("--predict", action="store_true", dest="predictFlag", default=False)
-    parser.add_option("--taglevel", type="int", dest="tag_level", default=200)
+    parser.add_option("--simple",action="store_false",dest="use_simple",default=True)
 
-    parser.add_option("--encoder_pass", type="int", dest="e_pass", default=2)
-    parser.add_option("--decoder_pass", type="int", dest="d_pass", default=2)
+    parser.add_option("--e_pass", type="int", dest="e_pass", default=2)
+    parser.add_option("--d_pass", type="int", dest="d_pass", default=2)
 
     parser.add_option("--paramdec", dest="paramdec", help="Decoder parameters file", metavar="FILE",
                       default="paramdec.pickle")
@@ -64,10 +65,6 @@ if __name__ == '__main__':
         pickle.dump((w2i, pos, options), paramsfp)
     print 'Parameters saved'
     data_list = list()
-    # tag_list = [t for t in tagCount]
-    # tag_map = utils.round_tag(tagCount, options.tag_level)
-    # id_2_pos = {id:p for p,id in pos.items()}
-    # flookup = utils.traverse_feat(options.train, tag_map, options.dist_dim)
     sen_idx = 0
     for s in sentences:
         s_word, s_pos = s.set_data_list(w2i, pos)
@@ -120,12 +117,15 @@ if __name__ == '__main__':
 
             print 'likelihood for this iteration ', training_likelihood
         print 'To train decoder'
-
+        if options.dir_flag:
+            dir_dim = 2
+        else:
+            dir_dim = 1
         for n in range(options.d_pass):
             print 'Decoder training iteration ', n
             training_likelihood = 0.0
             recons_counter = np.zeros(
-                (len(pos.keys()), options.tag_num, len(pos.keys()), options.tag_num, options.dist_dim, 2))
+                (len(pos.keys()), options.tag_num, len(pos.keys()), options.tag_num, options.dist_dim, dir_dim))
             lex_counter = np.zeros((len(pos.keys()),options.tag_num, len(w2i.keys())))
             for batch_id in range(len(batch_data)):
                 one_batch = batch_data[batch_id]

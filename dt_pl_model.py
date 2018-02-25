@@ -12,11 +12,6 @@ import torch.nn.functional as F
 import shutil
 
 
-def Parameter(shape=None, init=xavier_uniform):
-    shape = (shape, 1) if type(shape) == int else shape
-    return nn.Parameter(init(torch.Tensor(*shape)))
-
-
 def get_optim(opt, parameters):
     if opt.optim == 'sgd':
         return optim.SGD(parameters, lr=opt.learning_rate)
@@ -24,83 +19,58 @@ def get_optim(opt, parameters):
         return optim.Adam(parameters)
 
 
-def scalar(f):
-    if type(f) == int:
-        return Variable(torch.LongTensor([f]))
-    if type(f) == float:
-        return Variable(torch.FloatTensor([f]))
-
-
-def cat(l, dimension=-1):
-    valid_l = []
-    for candidate in l:
-        if candidate is not None:
-            valid_l.append(candidate)
-    if dimension < 0:
-        dimension += len(valid_l[0].size())
-    return torch.cat(valid_l, dimension)
-
-
 class dt_paralell_model(nn.Module):
     def __init__(self, w2i, pos, options):
         super(dt_paralell_model, self).__init__()
         self.tag_num = options.tag_num
+        self.dist_num = options.dist_num
         self.embedding_dim = options.wembedding_dim
         self.pdim = options.pembedding_dim
         self.hidden_dim = options.hidden_dim
         self.n_layer = options.n_layer
-        self.extr_dim = 0
+        self.external_embedding = options.external_embedding
         self.dist_dim = options.dist_dim
         self.vocab = {word: ind for word, ind in w2i.iteritems()}
         self.pos = {word: ind for ind, word in enumerate(pos)}
-        self.dist_dim = options.dist_dim
         self.gpu = options.gpu
         self.tdim = options.tag_dim
+        self.ddim = options.dist_dim
         self.trans_pos_dim = options.pembedding_dim
-        # self.feature_map = feature_map
-        self.lstm = nn.LSTM(self.embedding_dim + self.pdim, self.hidden_dim, self.n_layer, bidirectional=True)
+        self.dropout_ratio = options.dropout_ratio
+        self.dir_flag = options.dir_flag
+
+        if self.external_embedding != None:
+            print 'Loading external embeddings'
+            with open(self.external_embedding, 'r') as emb_file:
+                extrn_dim, to_augment, = utils.use_external_embedding(emb_file, self.vocab)
+            print 'External embeddings loaded'
+            self.embedding_dim = extrn_dim
+            self.wlookup = nn.Embedding(len(self.vocab), self.embedding_dim)
+            augmented = utils.build_new_emb(self.wlookup.weight.data.numpy(), to_augment, self.vocab)
+            self.wlookup.weight.data.copy_(torch.from_numpy(augmented))
+        else:
+            self.wlookup = nn.Embedding(len(self.vocab), self.embedding_dim)
+
+        self.lstm = nn.LSTM(self.embedding_dim + self.pdim, self.hidden_dim, self.n_layer, bidirectional=True,
+                            dropout=self.dropout_ratio)
         # self.hidden2tags = nn.Linear(self.hidden_dim, self.tag_num)
         self.hidden2tags = nn.Linear(2 * self.hidden_dim, self.tag_num)
         self.pre_hidden = nn.Linear(2 * self.hidden_dim, self.hidden_dim)
         self.trans_hidden = options.trans_hidden
+        self.dropout1 = nn.Dropout(p=self.dropout_ratio)
+        self.dropout2 = nn.Dropout(p=self.dropout_ratio)
 
-        self.feat2trans = nn.Linear(2 * (self.tdim + self.trans_pos_dim), self.trans_hidden)
+        self.feat2trans = nn.Linear(2 * (self.tdim + self.trans_pos_dim)+self.ddim, self.trans_hidden)
         self.trans_pos_emb = nn.Embedding(len(pos), self.pdim)
         self.tlookup = nn.Embedding(self.tag_num, self.tdim)
 
-        if options.external_embedding is not None:
-            external_embedding_fp = open(options.external_embedding, 'r')
-            external_embedding_fp.readline()
-            self.external_embedding = {line.split(' ')[0]: [float(f) for f in line.strip().split(' ')[1:]] for line in
-                                       external_embedding_fp}
-            external_embedding_fp.close()
-
-            self.edim = len(self.external_embedding.values()[0])
-            self.noextrn = [0.0 for _ in xrange(self.edim)]
-            self.extrnd = {word: i for i, word in enumerate(self.external_embedding)}
-            np_emb = np.zeros((len(self.external_embedding), self.edim))
-            for word, i in self.extrnd.iteritems():
-                np_emb[i] = self.external_embedding[word]
-            self.elookup = nn.Embedding(*np_emb.shape)
-            self.elookup.weight = Parameter(init=np_emb)
-
-            print 'Load external embedding. Vector dimensions', self.edim
-        self.wlookup = nn.Embedding(len(self.vocab), self.embedding_dim)
         self.plookup = nn.Embedding(len(pos), self.pdim)
         self.tran_pos = nn.Embedding(len(pos), self.pdim)
+        self.dlookup = nn.Embedding(self.dist_num*2+1,self.ddim)
 
         self.transitions = nn.Embedding(self.tag_num * self.tag_num, 1)
         self.transition_map = self.set_transitions()
-        # self.transitions = nn.Parameter(torch.Tensor(self.tag_num * self.tag_num))
-        # self.transitions.data.zero_()
 
-        # self.tlookup = nn.Embedding(self.tag_num, self.hidden_units)
-        # self.flookup = flookup
-        # feat_embedding = nn.Embedding(flookup.feat_num, 1)
-
-        # self.feat_embedding = param.init_feat_param(self.flookup)
-        # self.hidLayer = Parameter((2 * self.ldims, self.hidden_units))
-        # self.hidBias = Parameter(self.hidden_units)
         self.recons_param, self.lex_param = None, None
         self.trainer = get_optim(options, self.parameters())
 
@@ -108,39 +78,6 @@ class dt_paralell_model(nn.Module):
         self.partition_table = {}
         self.encoder_score_table = {}
         self.parse_results = {}
-
-    def set_tags(self, tag_map):
-        tag_pointer = 0
-        tag_num = 0
-        tag_table = {}
-        max_tag_num = 0
-        for t in tag_map.keys():
-            tag_size = tag_map[t]
-            tag_num += tag_size
-            tag_list = []
-            for s in range(tag_size):
-                tag_list.append(tag_pointer)
-                tag_pointer += 1
-            tag_table[t] = tag_list
-            if len(tag_list) > self.max_tag_num:
-                max_tag_num = len(tag_list)
-        return tag_num, tag_table, max_tag_num
-
-    def pre_process(self, sentence):
-        embeds = list()
-        for entry in sentence.entries:
-            c = float(self.wordsCount.get(entry.norm, 0))
-            dropFlag = (random.random() < (c / (0.25 + c)))
-            wordvec = self.wlookup(scalar(
-                int(self.vocab.get(entry.norm, 0)) if dropFlag else 0)) if self.wdims > 0 else None
-            posvec = self.plookup(scalar(int(self.pos[entry.pos]))) if self.pdims > 0 else None
-            evec = None
-            if self.external_embedding is not None:
-                evec = self.elookup(scalar(self.extrnd.get(entry.form, self.extrnd.get(entry.norm, 0)) if (
-                    dropFlag or (random.random() < 0.5)) else 0))
-            entry.vec = cat([wordvec, posvec, evec])
-            embeds.append(entry.vec)
-        return embeds
 
     def evaluate(self, batch_pos, batch_words, batch_sen, crf_scores):
         batch_size, sentence_length = batch_pos.data.shape
@@ -159,10 +96,13 @@ class dt_paralell_model(nn.Module):
                         dist = self.dist_dim - 1
                     else:
                         dist = abs(i - j) - 1
-                    if i > j:
-                        dir = 0
+                    if self.dir_flag:
+                        if i > j:
+                            dir = 0
+                        else:
+                            dir = 1
                     else:
-                        dir = 1
+                        dir = 0
                     scores[sentence_id, i, j, :, :] += np.log(self.recons_param[h_pos_id, :, m_pos_id, :, dist, dir])
                     scores[sentence_id, i, j, :, :] += np.log(self.lex_param[m_pos_id, :, word_id]
                                                               .reshape(1, self.tag_num))
@@ -228,8 +168,10 @@ class dt_paralell_model(nn.Module):
         return crf_scores
 
     def compute_trans(self, batch_pos):
+
         trans_var = []
         batch_size, sentence_length = batch_pos.data.shape
+
         pos_emb = self.trans_pos_emb(batch_pos)
         pos_emb_h = pos_emb.unsqueeze(2)
         pos_emb_m = pos_emb_h.permute(0, 2, 1, 3)
@@ -241,6 +183,7 @@ class dt_paralell_model(nn.Module):
         pos_emb_m = pos_emb_m.unsqueeze(4)
         pos_emb_h = pos_emb_h.repeat(1, 1, 1, self.tag_num, self.tag_num, 1)
         pos_emb_m = pos_emb_m.repeat(1, 1, 1, self.tag_num, self.tag_num, 1)
+
         trans_var.append(pos_emb_h)
         trans_var.append(pos_emb_m)
         tag_list = []
@@ -262,10 +205,32 @@ class dt_paralell_model(nn.Module):
         tag_emb_m = tag_emb_m.repeat(batch_size, sentence_length, sentence_length, 1, 1, 1)
         trans_var.append(tag_emb_h)
         trans_var.append(tag_emb_m)
+
+
+        dist_list = list()
+        for i in range(sentence_length):
+            head_list = list()
+            for j in range(sentence_length):
+                if abs(i-j)>self.dist_num:
+                    head_list.append(np.sign(i-j)*self.dist_num + self.dist_num)
+                else:
+                    head_list.append(i - j + self.dist_num)
+            dist_list.append(head_list)
+        dist_var = utils.list2Variable(dist_list,self.gpu)
+        dist_emb = self.dlookup(dist_var)
+        dist_emb = dist_emb.unsqueeze(2)
+        dist_emb = dist_emb.unsqueeze(3)
+        dist_emb = dist_emb.repeat(1,1,self.tag_num,self.tag_num,1)
+        dist_emb = dist_emb.unsqueeze(0)
+        dist_emb = dist_emb.repeat(batch_size,1,1,1,1,1)
+        trans_var.append(dist_emb)
+
+
         trans = torch.cat(trans_var, dim=5)
         trans_hidden = self.feat2trans(trans)
         trans_vec = F.relu(trans_hidden)
         trans_matrix = torch.mean(trans_vec, dim=5)
+
 
         return trans_matrix
 
@@ -294,8 +259,11 @@ class dt_paralell_model(nn.Module):
         w_embeds = self.wlookup(batch_words)
         p_embeds = self.plookup(batch_pos)
 
+        # w_embeds = self.dropout1(w_embeds)
+
         batch_input = torch.cat((w_embeds, p_embeds), 2)
         hidden_out, _ = self.lstm(batch_input)
+        # hidden_out = self.dropout2(hidden_out)
         # pre = self.pre_hidden(hidden_out)
         # temp = F.relu(pre)
         # hidden_out_matrix = hidden_out.transpose(1,2)
@@ -380,7 +348,10 @@ class dt_paralell_model(nn.Module):
         self.load_state_dict(torch.load(fn))
 
     def init_decoder_param(self, data):
-        dir_dim = 2
+        if self.dir_flag:
+            dir_dim = 2
+        else:
+            dir_dim = 1
         pos_num = len(self.pos.keys())
         word_num = len(self.vocab.keys())
         self.recons_param = np.zeros(
@@ -392,7 +363,7 @@ class dt_paralell_model(nn.Module):
         for child_idx in range(pos_num):
             if child_idx == root_idx:
                 continue
-            self.recons_param[root_idx, 0, child_idx, :, :, 1] = 1. / (pos_num * self.tag_num * self.dist_dim)
+            self.recons_param[root_idx, 0, child_idx, :, :, dir_dim - 1] = 1. / (pos_num * self.tag_num * self.dist_dim)
 
         for sentence in data:
             for i, h_entry in enumerate(sentence.entries):
@@ -407,8 +378,11 @@ class dt_paralell_model(nn.Module):
                     span = abs(i - j)
                     if dist > max_dist:
                         dist = max_dist
-                    if i < j:
-                        dir = 1
+                    if self.dir_flag:
+                        if i < j:
+                            dir = 1
+                        else:
+                            dir = 0
                     else:
                         dir = 0
                     h_pos = h_entry.pos
@@ -445,3 +419,19 @@ class dt_paralell_model(nn.Module):
                 copied to that device
         """
         return self._apply(lambda t: t.cuda(device_id))
+
+    def init_simple_decoder_param(self,data):
+        if self.dir_flag:
+            dir_dim = 2
+        else:
+            dir_dim = 1
+        pos_num = len(self.pos.keys())
+        word_num = len(self.vocab.keys())
+        self.recons_param = np.zeros(
+            (pos_num, self.tag_num, pos_num, self.tag_num, dir_dim), dtype=np.float64)
+        self.lex_param = np.zeros((pos_num, self.tag_num, word_num), dtype=np.float64)
+        max_dist = self.dist_dim - 1
+        smoothing = 0.00001
+        root_idx = self.pos['ROOT-POS']
+
+
