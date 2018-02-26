@@ -25,8 +25,8 @@ class eisner_layer(autograd.Function):
         grad_output = output.contiguous().view(self.batch_size, 1, 1, 1, 1)
         gradient = mius * grad_output
         batch_size, sent_len, _, tag_dim, _ = gradient.size()
-
-        gradient[:, 0, :, 1:, :].fill_(0.0)
+        if tag_dim > 1:
+            gradient[:, 0, :, 1:, :].fill_(0.0)
         gradient[:, :, 0, :, :].fill_(0.0)
         for i in range(self.sentence_length):
             gradient[:, i, i, :, :].fill_(0.0)

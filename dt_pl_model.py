@@ -60,13 +60,13 @@ class dt_paralell_model(nn.Module):
         self.dropout1 = nn.Dropout(p=self.dropout_ratio)
         self.dropout2 = nn.Dropout(p=self.dropout_ratio)
 
-        self.feat2trans = nn.Linear(2 * (self.tdim + self.trans_pos_dim)+self.ddim, self.trans_hidden)
+        self.feat2trans = nn.Linear(2 * (self.tdim + self.trans_pos_dim) + self.ddim, self.trans_hidden)
         self.trans_pos_emb = nn.Embedding(len(pos), self.pdim)
         self.tlookup = nn.Embedding(self.tag_num, self.tdim)
 
         self.plookup = nn.Embedding(len(pos), self.pdim)
         self.tran_pos = nn.Embedding(len(pos), self.pdim)
-        self.dlookup = nn.Embedding(self.dist_num*2+1,self.ddim)
+        self.dlookup = nn.Embedding(self.dist_num * 2 + 1, self.ddim)
 
         self.transitions = nn.Embedding(self.tag_num * self.tag_num, 1)
         self.transition_map = self.set_transitions()
@@ -112,8 +112,9 @@ class dt_paralell_model(nn.Module):
     def construct_mask(self, batch_size, sentence_length):
         masks = np.zeros((batch_size, sentence_length, sentence_length, self.tag_num, self.tag_num))
         masks[:, :, 0, :, :] = 1
-        masks[:, 0, :, 1:, :] = 1
-        masks[:, :, :, :, 0] = 1
+        if self.tag_num > 1:
+            masks[:, 0, :, 1:, :] = 1
+        # masks[:, :, :, :, 0] = 1
         for i in range(sentence_length):
             masks[:, i, i, :, :] = 1
         masks = masks.astype(int)
@@ -206,31 +207,28 @@ class dt_paralell_model(nn.Module):
         trans_var.append(tag_emb_h)
         trans_var.append(tag_emb_m)
 
-
         dist_list = list()
         for i in range(sentence_length):
             head_list = list()
             for j in range(sentence_length):
-                if abs(i-j)>self.dist_num:
-                    head_list.append(np.sign(i-j)*self.dist_num + self.dist_num)
+                if abs(i - j) > self.dist_num:
+                    head_list.append(np.sign(i - j) * self.dist_num + self.dist_num)
                 else:
                     head_list.append(i - j + self.dist_num)
             dist_list.append(head_list)
-        dist_var = utils.list2Variable(dist_list,self.gpu)
+        dist_var = utils.list2Variable(dist_list, self.gpu)
         dist_emb = self.dlookup(dist_var)
         dist_emb = dist_emb.unsqueeze(2)
         dist_emb = dist_emb.unsqueeze(3)
-        dist_emb = dist_emb.repeat(1,1,self.tag_num,self.tag_num,1)
+        dist_emb = dist_emb.repeat(1, 1, self.tag_num, self.tag_num, 1)
         dist_emb = dist_emb.unsqueeze(0)
-        dist_emb = dist_emb.repeat(batch_size,1,1,1,1,1)
+        dist_emb = dist_emb.repeat(batch_size, 1, 1, 1, 1, 1)
         trans_var.append(dist_emb)
-
 
         trans = torch.cat(trans_var, dim=5)
         trans_hidden = self.feat2trans(trans)
         trans_vec = F.relu(trans_hidden)
         trans_matrix = torch.mean(trans_vec, dim=5)
-
 
         return trans_matrix
 
@@ -360,10 +358,14 @@ class dt_paralell_model(nn.Module):
         max_dist = self.dist_dim - 1
         smoothing = 0.00001
         root_idx = self.pos['ROOT-POS']
+        tag_rand = np.random.uniform(-1. / (pos_num * self.tag_num * self.dist_dim* 10),
+                                     1. / (pos_num * self.tag_num * self.dist_dim * 10),self.tag_num * self.dist_dim)
+        tag_rand = tag_rand.reshape(self.tag_num,self.dist_dim)
         for child_idx in range(pos_num):
             if child_idx == root_idx:
                 continue
             self.recons_param[root_idx, 0, child_idx, :, :, dir_dim - 1] = 1. / (pos_num * self.tag_num * self.dist_dim)
+            # self.recons_param[root_idx,0,child_idx,:,:,dir_dim - 1] += tag_rand
 
         for sentence in data:
             for i, h_entry in enumerate(sentence.entries):
@@ -420,7 +422,7 @@ class dt_paralell_model(nn.Module):
         """
         return self._apply(lambda t: t.cuda(device_id))
 
-    def init_simple_decoder_param(self,data):
+    def init_simple_decoder_param(self, data):
         if self.dir_flag:
             dir_dim = 2
         else:
@@ -433,5 +435,33 @@ class dt_paralell_model(nn.Module):
         max_dist = self.dist_dim - 1
         smoothing = 0.00001
         root_idx = self.pos['ROOT-POS']
+        for child_idx in range(pos_num):
+            if child_idx == root_idx:
+                continue
+            self.recons_param[root_idx, 0, child_idx, dir_dim - 1] = 1. / pos_num
 
-
+        for sentence in data:
+            for i, h_entry in enumerate(sentence.entries):
+                for j, m_entry in enumerate(sentence.entries):
+                    if i == 0:
+                        continue
+                    if i == j:
+                        continue
+                    if j == 0:
+                        continue
+                    span = abs(i - j)
+                    if self.dir_flag:
+                        if i < j:
+                            dir = 1
+                        else:
+                            dir = 0
+                    else:
+                        dir = 0
+                    h_pos = h_entry.pos
+                    m_pos = m_entry.pos
+                    word = m_entry.norm
+                    h_pos_id = self.pos.get(h_pos)
+                    m_pos_id = self.pos.get(m_pos)
+                    word_id = self.vocab.get(word)
+                    self.lex_param[m_pos_id, :, word_id] += 1. / self.tag_num
+                    self.recons_param[h_pos_id, :, m_pos_id, :, dir] += 1. / (span * self.tag_num * self.tag_num)
