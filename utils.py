@@ -95,7 +95,7 @@ class data_sentence:
             if entry.pos in pos.keys():
                 pos_list.append(pos[entry.pos])
             else:
-                pos_list.append(pos['<UNKNOWN>'])
+                pos_list.append(pos['<UNKNOWN-POS>'])
         return word_list, pos_list
 
     def __str__(self):
@@ -189,6 +189,23 @@ def read_data(conll_path, isPredict):
                 s_counter += 1
         return sentences
 
+# def find_trans(sentences,pos,tag_num):
+#     pos_num = len(pos.keys())
+#     trans_map = np.zeros((pos_num*tag_num,pos_num*tag_num),dtype = int)
+#     for i in range((pos_num*tag_num)*(pos_num*tag_num)):
+#         trans_map[i/(pos_num*tag_num)][i%(pos_num*tag_num)] = i
+#     trans_list = list()
+#     for sentence in sentences:
+#         s_trans = list()
+#         for i,h_entry in enumerate(sentence):
+#             h_trans_list = list()
+#             for j,m_entry in enumerate(sentence):
+#                 h_tag_num = pos[h_entry.pos]
+#                 m_tag_num = pos[m_entry.pos]
+#                 trans_idx = h_tag_num
+#
+#     return
+
 
 def read_conll(fh):
     root = ConllEntry(0, '*root*', '*root*', 'ROOT-CPOS', 'ROOT-POS', '_', -1, 'rroot', '_', '_')
@@ -208,7 +225,7 @@ def read_conll(fh):
         yield tokens
 
 
-def eval(predicted, gold, test_path):
+def eval(predicted, gold, test_path,prior_set):
     correct_counter = 0
     total_counter = 0
     for s in range(len(gold)):
@@ -219,6 +236,9 @@ def eval(predicted, gold, test_path):
                 continue
             if ps[i] == e.parent_id:
                 correct_counter += 1
+            h = gs.entries[e.parent_id].pos
+            # if (h,e.pos) in prior_set and ps[i] != e.parent_id:
+            #     print "Wrong prediction for "+ h +" " +e.pos
             total_counter += 1
     accuracy = float(correct_counter) / total_counter
     print 'UAS is ' + str(accuracy * 100) + '%'
@@ -432,3 +452,40 @@ def get_index(b, id):
     id_a = id // b
     id_b = id % b
     return (id_a, id_b)
+
+def use_external_embedding(extrn_emb,vocab):
+    to_augment = {}
+    extrn_dim = 0
+    for line in extrn_emb:
+        line = line.split(' ')
+        word = line[0]
+        vector = list(map(lambda t: float(t), filter(lambda n: n and not n.isspace(), line[1:])))
+        extrn_dim = len(vector)
+        if word in vocab.keys():
+            to_augment[word] = vector
+    return extrn_dim,to_augment
+
+def build_new_emb(original_emb,to_augment,vocab):
+    augmented = np.copy(original_emb)
+    for w in to_augment.keys():
+        w_idx = vocab[w]
+        augmented[w_idx] = to_augment[w]
+    return augmented
+
+def construct_prior(prior_set,sentence,pos,tag_num,prior_weight):
+    sentence_length = sentence.size
+    s_prior = np.zeros((sentence_length,sentence_length,tag_num,tag_num))
+    for i in range(sentence_length):
+        for j in range(sentence_length):
+            if i == j:
+                continue
+            if j == 0:
+                continue
+            h_pos = sentence.entries[i].pos
+            m_pos = sentence.entries[j].pos
+            tag_tuple = (h_pos,m_pos)
+            if tag_tuple in prior_set:
+                s_prior[i,j,:,:] = prior_weight
+    return s_prior
+
+

@@ -29,21 +29,24 @@ if __name__ == '__main__':
     parser.add_option("--epochs", type="int", dest="epochs", default=10)
     parser.add_option("--tag_num", type="int", dest="tag_num", default=4)
     parser.add_option("--tag_dim", type="int", dest="tag_dim", default=5)
-    parser.add_option("--dist_dim",type="int",dest="dist_dim",default=5)
-    parser.add_option("--use_dir",action="store_true",dest="dir_flag",default=False)
-    parser.add_option("--dist_num",type="int",dest="dist_num",default=5)
+    parser.add_option("--use_dir", action="store_true", dest="dir_flag", default=False)
+    parser.add_option("--dist_num", type="int", dest="dist_num", default=5)
 
     parser.add_option("--optim", type="string", dest="optim", default='adam')
     parser.add_option("--lr", type="float", dest="learning_rate", default=0.01)
     parser.add_option("--outdir", type="string", dest="output", default="output")
 
     parser.add_option("--lstmdims", type="int", dest="lstm_dims", default=125)
-    parser.add_option("--distdim", type="int", dest="dist_dim", default=5)
-    parser.add_option("--dropout",type="float",dest="dropout_ratio",default=0.25)
+    parser.add_option("--distdim", type="int", dest="dist_dim", default=1)
+    parser.add_option("--dropout", type="float", dest="dropout_ratio", default=0.25)
     parser.add_option("--trans_hidden", type="int", dest="trans_hidden", default=50)
+    parser.add_option("--use_lex", action="store_true", dest="use_lex", default=False)
+    parser.add_option("--use_context", action="store_true", dest="use_context", default=False)
+    parser.add_option("--prior_weight", type="float", dest="prior_weight", default=0.0)
+    parser.add_option("--rule_type",type="string",dest="rule_type",default="WSJ")
+    parser.add_option("--use_gold",action="store_true",dest="use_gold",default=False)
 
     parser.add_option("--predict", action="store_true", dest="predictFlag", default=False)
-    parser.add_option("--simple",action="store_false",dest="use_simple",default=True)
 
     parser.add_option("--e_pass", type="int", dest="e_pass", default=2)
     parser.add_option("--d_pass", type="int", dest="d_pass", default=2)
@@ -66,6 +69,11 @@ if __name__ == '__main__':
     print 'Parameters saved'
     data_list = list()
     sen_idx = 0
+    if options.prior_weight > 0:
+        prior_dict = {}
+        prior_set = param.set_prior(options.rule_type)
+    if options.use_gold:
+        gold_dict = {}
     for s in sentences:
         s_word, s_pos = s.set_data_list(w2i, pos)
         s_data_list = list()
@@ -73,12 +81,22 @@ if __name__ == '__main__':
         s_data_list.append(s_pos)
         s_data_list.append([sen_idx])
         data_list.append(s_data_list)
+        if options.prior_weight > 0:
+            s_prior = utils.construct_prior(prior_set,s,pos,options.tag_num,options.prior_weight)
+            prior_dict[sen_idx] = s_prior
+        if options.use_gold:
+            s_gold = list(map(lambda e:e.parent_id,s.entries))
+            gold_dict[sen_idx] = s_gold
         sen_idx += 1
     # utils.find_trans(sentences,pos,options.tag_num)
     batch_data = utils.construct_batch_data(data_list, options.batchsize)
     print 'Batch data constructed'
-    # dependencyTaggingPl_model = dt_pl_model.dt_paralell_model(words, w2i, pos,id_2_pos,tag_map,options)
+
     dependencyTaggingPl_model = dt_pl_model.dt_paralell_model(w2i, pos, options)
+    if options.prior_weight > 0:
+        dependencyTaggingPl_model.prior_dict = prior_dict
+    if options.use_gold:
+        dependencyTaggingPl_model.gold_dict = gold_dict
     print 'Model constructed'
     dependencyTaggingPl_model.init_decoder_param(sentences)
     print 'Decoder parameters initialized'
@@ -125,8 +143,11 @@ if __name__ == '__main__':
             print 'Decoder training iteration ', n
             training_likelihood = 0.0
             recons_counter = np.zeros(
-                (len(pos.keys()), options.tag_num, len(pos.keys()), options.tag_num, options.dist_dim, dir_dim))
-            lex_counter = np.zeros((len(pos.keys()),options.tag_num, len(w2i.keys())))
+                (len(pos.keys()), options.tag_num, len(pos.keys()), options.dist_dim, dir_dim))
+            if options.use_lex:
+                lex_counter = np.zeros((len(pos.keys()), options.tag_num, len(w2i.keys())))
+            else:
+                lex_counter = None
             for batch_id in range(len(batch_data)):
                 one_batch = batch_data[batch_id]
                 batch_words, batch_pos, batch_sen = [s[0] for s in one_batch], [s[1] for s in one_batch], \

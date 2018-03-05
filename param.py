@@ -106,25 +106,38 @@ def fire_feats(sentence, scores, crf_scores, feat_embedding, tag_table, flookup,
     return
 
 
-def update_scores(pos_sentence, scores,crf_scores,recons_param, lex_param, distdim):
+def update_scores(pos_sentence, words_sentence, sidx, scores, crf_scores, recons_param, lex_param, distdim, use_lex,
+                  prior_weight, prior_dict):
     max_dist = distdim - 1
-    sentence_length,_,tag_num,_ = scores.shape
+    sentence_length, _, tag_num, _ = scores.shape
+    dir_dim = recons_param.shape[4]
     for i in range(sentence_length):
         for j in range(sentence_length):
             if j == 0:
                 continue
             if i == j:
                 continue
-            dist = int(abs(i - j))
+            dist = int(abs(i - j)) - 1
             if dist > max_dist:
                 dist = max_dist
-            if i < j:
-                dir = 1
+            if dir_dim == 2:
+                if i < j:
+                    dir = 1
+                else:
+                    dir = 0
             else:
                 dir = 0
-            pos_idx = pos_sentence[j]
-            scores[i, j, :, :] = crf_scores[i, j, :, :] + np.log(recons_param[:, :, dist, dir])
-            scores[i, j, :, :] += np.log(lex_param[:, pos_idx].reshape(1,tag_num))
+            h_pos_idx = pos_sentence[i]
+            m_pos_idx = pos_sentence[j]
+            word_idx = words_sentence[j]
+            scores[i, j, :, :] = crf_scores[i, j, :, :] + np.log(
+                recons_param[h_pos_idx, :, m_pos_idx, dist, dir]).reshape(tag_num, 1)
+            if use_lex:
+                scores[i, j, :, :] += np.log(lex_param[m_pos_idx, :, word_idx].reshape(1, tag_num))
+    # if prior_weight > 0:
+    #     prior_score = prior_dict[sidx]
+    #     scores += prior_score
+
     return scores
 
 
@@ -146,42 +159,64 @@ def get_lex_score(sentence, vocab, tag_table, lex_param, max_tag_num):
     return lex_score
 
 
-def counter_update(best_parses,best_tags,sentence_scores, recons_counter, lex_counter,pos_sentence,distdim, partition):
+def counter_update(best_parses, best_tags, sentence_scores, recons_counter, lex_counter, pos_sentence, words_sentence,
+                   distdim, partition, use_lex, sidx, prior_weight, prior_dict):
     max_dist = distdim - 1
     s_log_likelihood = 0.0
+    if prior_weight > 0:
+        sentence_scores -= prior_dict[sidx]
     for i, h in enumerate(best_parses):
         m_tag_id = int(best_tags[i])
-        lex_counter[m_tag_id][pos_sentence[i]] += 1
+        m_pos = pos_sentence[i]
+        if use_lex:
+            lex_counter[m_pos, m_tag_id, words_sentence[i]] += 1
         if h == -1:
             continue
-        dist = int(abs(i - h))
+        h = int(h)
+        h_pos = pos_sentence[h]
+        dist = int(abs(i - h)) - 1
         if dist > max_dist:
             dist = max_dist
-        if h < i:
-            dir = 1
+        if recons_counter.shape[4] == 2:
+            if h < i:
+                dir = 1
+            else:
+                dir = 0
         else:
             dir = 0
-        h = int(h)
         h_tag_id = int(best_tags[h])
-        recons_counter[h_tag_id][m_tag_id][dist][dir] += 1
-        s_log_likelihood += sentence_scores[h][i][h_tag_id][m_tag_id]
+        recons_counter[h_pos, h_tag_id, m_pos, dist, dir] += 1
+        s_log_likelihood += sentence_scores[h, i, h_tag_id, m_tag_id]
     s_log_likelihood -= partition
     return s_log_likelihood
 
 
-def normalize(recons_counter, lex_counter, recons_param, lex_param, dist_dim):
-    tag_num = len(recons_counter)
+def normalize(recons_counter, lex_counter, recons_param, lex_param, root_idx, use_lex):
+    pos_num, tag_num, _, dist_dim, dir_dim = recons_counter.shape
+    if use_lex:
+        _, _, word_num = lex_counter.shape
+        word_sum = np.sum(lex_counter, axis=2).reshape(pos_num, tag_num, 1)
     smoothing = 0.001
-    recons_counter = recons_counter+smoothing
-    lex_counter = lex_counter+smoothing
-    for t in range(tag_num):
-        for d in range(dist_dim):
-            for i in range(2):
-                tag_sum = np.sum(recons_counter[t, :, d, i])
-                recons_param[t, :, d, i] = recons_counter[t, :, d, i] / tag_sum
-    for t in range(tag_num):
-        tag_word_sum = np.sum(lex_counter[t, :])
-        lex_param[t, :] = lex_counter[t, :] / tag_word_sum
+    child_sum = np.sum(recons_counter, axis=2).reshape(pos_num, tag_num, 1, dist_dim, dir_dim)
+    smoothing_child = np.empty((pos_num, dist_dim, dir_dim))
+    smoothing_child.fill(smoothing)
+    smoothing_child_sum = np.sum(smoothing_child, axis=0)
+    for i in range(pos_num):
+        if i == root_idx:
+            recons_param[i, 0, :, :, :] = (recons_counter[i, 0, :, :, :] + smoothing_child) / (
+                child_sum[i, 0] + smoothing_child_sum)
+        else:
+            recons_param[i, :, :, :, :] = (recons_counter[i, :, :, :, :] + smoothing_child) / (
+                child_sum[i] + smoothing_child_sum)
+    if use_lex:
+        smoothing_word = np.empty(word_num)
+        smoothing_word.fill(smoothing)
+        smoothing_word_sum = np.sum(smoothing_word)
+        for i in range(pos_num):
+            if i == root_idx:
+                continue
+            lex_param[i, :, :] = (lex_counter[i] + smoothing_word) / (word_sum[i] + smoothing_word_sum)
+
     return
 
 
@@ -250,8 +285,24 @@ def init_param(data, vocab, tag_table, recons_param, lex_param, distdim):
     return
 
 
-def set_prior():
-    return
+def set_prior(ruleType):
+    prior_set = set()
+    if ruleType == 'WSJ':
+        prior_set.add(("ROOT-POS", "MD"))
+        prior_set.add(("ROOT-POS", "VB"))
 
+        prior_set.add(("VB", "NN"))
+        prior_set.add(("VB", "WP"))
+        prior_set.add(("VB", "PR"))
+        prior_set.add(("VB", "RB"))
+        prior_set.add(("VB", "VB"))
 
+        prior_set.add(("MD", "VB"))
+        prior_set.add(("NN", "JJ"))
+        prior_set.add(("NN", "NN"))
+        prior_set.add(("NN", "CD"))
 
+        prior_set.add(("IN", "NN"))
+
+        prior_set.add(("JJ", "RB"))
+    return prior_set
