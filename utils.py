@@ -225,7 +225,7 @@ def read_conll(fh):
         yield tokens
 
 
-def eval(predicted, gold, test_path,prior_set):
+def eval(predicted, gold, test_path,log_path,epoch):
     correct_counter = 0
     total_counter = 0
     for s in range(len(gold)):
@@ -261,6 +261,22 @@ def eval(predicted, gold, test_path,prior_set):
         f_w.write('\n')
         f_w.write('\n')
     f_w.close()
+    if epoch == 0:
+        log = open(log_path,'w')
+        log.write("UAS for epoch "+str(epoch))
+        log.write('\n')
+        log.write('\n')
+        log.write(str(accuracy))
+        log.write('\n')
+        log.write('\n')
+    else:
+        log = open(log_path,'a')
+        log.write("UAS for epoch " + str(epoch))
+        log.write('\n')
+        log.write('\n')
+        log.write(str(accuracy))
+        log.write('\n')
+        log.write('\n')
 
 
 def write_conll(fn, conll_gen):

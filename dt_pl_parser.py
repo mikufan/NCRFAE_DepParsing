@@ -14,7 +14,7 @@ import pickle
 if __name__ == '__main__':
     parser = OptionParser()
     parser.add_option("--train", dest="train", help="train file", metavar="FILE", default="data/toy_test")
-    parser.add_option("--dev", dest="dev", help="dev file", metavar="FILE", default="data/dev")
+    parser.add_option("--dev", dest="dev", help="dev file", metavar="FILE", default="data/wsj10_d")
 
     parser.add_option("--extrn", dest="external_embedding", help="External embeddings", metavar="FILE")
     parser.add_option("--batch", type="int", dest="batchsize", default=100)
@@ -24,7 +24,7 @@ if __name__ == '__main__':
                       default="output/neuralfirstorder.model")
     parser.add_option("--wembedding", type="int", dest="wembedding_dim", default=100)
     parser.add_option("--pembedding", type="int", dest="pembedding_dim", default=25)
-    parser.add_option("--hidden", type="int", dest="hidden_dim", default=50)
+    parser.add_option("--hidden", type="int", dest="hidden_dim", default=100)
     parser.add_option("--nLayer", type="int", dest="n_layer", default=1)
     parser.add_option("--epochs", type="int", dest="epochs", default=10)
     parser.add_option("--tag_num", type="int", dest="tag_num", default=4)
@@ -36,7 +36,7 @@ if __name__ == '__main__':
     parser.add_option("--lr", type="float", dest="learning_rate", default=0.01)
     parser.add_option("--outdir", type="string", dest="output", default="output")
     parser.add_option("--l2",type="float",dest="l2",default=0.0)
-
+    parser.add_option("--sample_idx",type="int",dest="sample_idx",default=1000)
     parser.add_option("--lstmdims", type="int", dest="lstm_dims", default=125)
     parser.add_option("--distdim", type="int", dest="dist_dim", default=1)
     parser.add_option("--dropout", type="float", dest="dropout_ratio", default=0.25)
@@ -47,6 +47,8 @@ if __name__ == '__main__':
     parser.add_option("--rule_type",type="string",dest="rule_type",default="WSJ")
     parser.add_option("--use_gold",action="store_true",dest="use_gold",default=False)
     parser.add_option("--use_initial",action="store_true",dest="use_initial",default=False)
+    parser.add_option("--do_eval",action="store_true",dest="do_eval",default= False)
+    parser.add_option("--log",dest="log",help="log file", metavar="FILE", default="output/log")
 
     parser.add_option("--predict", action="store_true", dest="predictFlag", default=False)
 
@@ -66,7 +68,7 @@ if __name__ == '__main__':
 
     w2i, pos, sentences = utils.read_data(options.train, False)
     print 'Data read'
-    with open(os.path.join(options.output, options.params), 'w') as paramsfp:
+    with open(os.path.join(options.output, options.params+'_'+str(options.sample_idx)), 'w') as paramsfp:
         pickle.dump((w2i, pos, options), paramsfp)
     print 'Parameters saved'
     data_list = list()
@@ -163,8 +165,34 @@ if __name__ == '__main__':
                 training_likelihood += batch_likelihood
             print 'Likelihood for this iteration', training_likelihood
             dependencyTaggingPl_model.hard_em_m(batch_data, recons_counter, lex_counter)
-        with open(os.path.join(options.output, options.paramdec) + str(epoch + 1), 'w') as paramdec:
+        with open(os.path.join(options.output, options.paramdec) + str(epoch + 1)+'_'+str(options.sample_idx), 'w') as paramdec:
             pickle.dump((dependencyTaggingPl_model.recons_param, dependencyTaggingPl_model.lex_param), paramdec)
         dependencyTaggingPl_model.save(
-            os.path.join(options.output, os.path.basename(options.model) + str(epoch + 1)))
+            os.path.join(options.output, os.path.basename(options.model) + str(epoch + 1)+'_'+str(options.sample_idx)))
+        if options.do_eval:
+            print "===================================="
+            print 'Do evaluation on development set'
+            eval_sentences = utils.read_data(options.dev, True)
+            dependencyTaggingPl_model.eval()
+            sen_idx = 0
+            eval_data_list = list()
+            devpath = os.path.join(options.output, 'test_pred'+str(epoch+1)+'_'+str(options.sample_idx))
+            for s in eval_sentences:
+                s_word, s_pos = s.set_data_list(w2i, pos)
+                s_data_list = list()
+                s_data_list.append(s_word)
+                s_data_list.append(s_pos)
+                s_data_list.append([sen_idx])
+                eval_data_list.append(s_data_list)
+                sen_idx += 1
+            eval_batch_data = utils.construct_batch_data(eval_data_list, options.batchsize)
+            for batch_id, one_batch in enumerate(eval_batch_data):
+                eval_batch_words, eval_batch_pos, eval_batch_sen = [s[0] for s in one_batch], [s[1] for s in one_batch], \
+                                                    [s[2][0] for s in one_batch]
+                eval_batch_words_v = utils.list2Variable(eval_batch_words, options.gpu)
+                eval_batch_pos_v = utils.list2Variable(eval_batch_pos, options.gpu)
+                dependencyTaggingPl_model(eval_batch_words_v, eval_batch_pos_v, None, eval_batch_sen)
+            test_res = dependencyTaggingPl_model.parse_results
+            utils.eval(test_res, eval_sentences, devpath,options.log+'_'+str(options.sample_idx),epoch)
+            print "===================================="
     print 'Training finished'

@@ -129,7 +129,7 @@ class dt_paralell_model(nn.Module):
                     if self.use_lex:
                         scores[sentence_id, i, j, :, :] += np.log(self.lex_param[m_pos_id, :, word_id]
                                                                   .reshape(1, self.tag_num))
-            if self.prior_weight > 0:
+            if self.prior_weight > 0 and self.training:
                 prior_score = self.prior_dict[batch_sen[sentence_id]]
                 scores[sentence_id] += prior_score
             self.tree_param[batch_sen[sentence_id]] = scores[sentence_id]
@@ -306,7 +306,7 @@ class dt_paralell_model(nn.Module):
         likelihood = 0.0
         for sentence_id in range(batch_size):
             sentence_tree_score = []
-            if self.prior_weight > 0:
+            if self.prior_weight > 0 and self.training:
                 scores[sentence_id] -= self.prior_dict[batch_sen[sentence_id]]
             for i in range(1, sentence_length):
                 head_id = best_parse[0, sentence_id, i]
@@ -332,6 +332,7 @@ class dt_paralell_model(nn.Module):
         hidden_out, _ = self.lstm(batch_input)
         trans_masks, trans_back_masks = self.construct_tran_mask(batch_size, sentence_length)
         trans_matrix = self.compute_trans(batch_pos, trans_masks, trans_back_masks)
+        hidden_out = self.dropout2(hidden_out)
         lstm_feats = self.hidden2tags(hidden_out)
         # lstm_feats = self.hidden2tags(temp)
         mask = self.construct_mask(batch_size, sentence_length)
@@ -369,7 +370,7 @@ class dt_paralell_model(nn.Module):
         for sentence_id in range(batch_size):
             sidx = sen_idx[sentence_id]
             sentence_scores = self.tree_param[sidx]
-            if self.prior_weight > 0:
+            if self.prior_weight > 0 and self.training :
                 sentence_scores += self.prior_dict[sidx]
             batch_score.append(sentence_scores)
         batch_score = np.array(batch_score)
