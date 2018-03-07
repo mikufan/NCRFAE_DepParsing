@@ -488,4 +488,39 @@ def construct_prior(prior_set,sentence,pos,tag_num,prior_weight):
                 s_prior[i,j,:,:] = prior_weight
     return s_prior
 
+def compute_trans(feat_type,batch_size,sentence_length,tag_num,feat_emb):
+    if feat_type == 'sentence':
+        feat_emb_h = feat_emb.unsqueeze(2)
+        feat_emb_m = feat_emb_h.permute(0, 2, 1, 3)
+        feat_emb_h = feat_emb_h.repeat(1, 1, sentence_length, 1)
+        feat_emb_m = feat_emb_m.repeat(1, sentence_length, 1, 1)
+        feat_emb_h = feat_emb_h.unsqueeze(3)
+        feat_emb_h = feat_emb_h.unsqueeze(4)
+        feat_emb_m = feat_emb_m.unsqueeze(3)
+        feat_emb_m = feat_emb_m.unsqueeze(4)
+        feat_emb_h = feat_emb_h.repeat(1, 1, 1, tag_num, tag_num, 1)
+        feat_emb_m = feat_emb_m.repeat(1, 1, 1, tag_num, tag_num, 1)
+        return feat_emb_h,feat_emb_m
+    if feat_type == 'tag':
+        feat_emb_h = feat_emb.unsqueeze(1)
+        feat_emb_m = feat_emb_h.permute(1, 0, 2)
+        feat_emb_h = feat_emb_h.repeat(1, tag_num, 1)
+        feat_emb_m = feat_emb_m.repeat(tag_num, 1, 1)
+        feat_emb_h = feat_emb_h.unsqueeze(0)
+        feat_emb_h = feat_emb_h.unsqueeze(0)
+        feat_emb_h = feat_emb_h.unsqueeze(0)
+        feat_emb_m = feat_emb_m.unsqueeze(0)
+        feat_emb_m = feat_emb_m.unsqueeze(0)
+        feat_emb_m = feat_emb_m.unsqueeze(0)
+        feat_emb_h = feat_emb_h.repeat(batch_size, sentence_length, sentence_length, 1, 1, 1)
+        feat_emb_m = feat_emb_m.repeat(batch_size, sentence_length, sentence_length, 1, 1, 1)
+        return feat_emb_h,feat_emb_m
+    if feat_type == 'global':
+        feat_emb = feat_emb.unsqueeze(2)
+        feat_emb = feat_emb.unsqueeze(3)
+        feat_emb = feat_emb.repeat(1, 1, tag_num, tag_num, 1)
+        feat_emb = feat_emb.unsqueeze(0)
+        feat_emb = feat_emb.repeat(batch_size, 1, 1, 1, 1, 1)
+        return feat_emb
+
 

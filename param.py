@@ -196,7 +196,7 @@ def normalize(recons_counter, lex_counter, recons_param, lex_param, root_idx, us
     if use_lex:
         _, _, word_num = lex_counter.shape
         word_sum = np.sum(lex_counter, axis=2).reshape(pos_num, tag_num, 1)
-    smoothing = 0.001
+    smoothing = 1e-8
     child_sum = np.sum(recons_counter, axis=2).reshape(pos_num, tag_num, 1, dist_dim, dir_dim)
     smoothing_child = np.empty((pos_num, dist_dim, dir_dim))
     smoothing_child.fill(smoothing)
@@ -205,9 +205,11 @@ def normalize(recons_counter, lex_counter, recons_param, lex_param, root_idx, us
         if i == root_idx:
             recons_param[i, 0, :, :, :] = (recons_counter[i, 0, :, :, :] + smoothing_child) / (
                 child_sum[i, 0] + smoothing_child_sum)
+            #recons_param[i,0,:,:,:] = recons_counter[i,0,:,:,:]/child_sum[i,0]
         else:
             recons_param[i, :, :, :, :] = (recons_counter[i, :, :, :, :] + smoothing_child) / (
                 child_sum[i] + smoothing_child_sum)
+            #recons_param[i, :, :, :, :] = recons_counter[i, :, :, :, :] / child_sum[i]
     if use_lex:
         smoothing_word = np.empty(word_num)
         smoothing_word.fill(smoothing)

@@ -14,13 +14,13 @@ import shutil
 
 def get_optim(opt, parameters):
     if opt.optim == 'sgd':
-        return optim.SGD(parameters, lr=opt.learning_rate)
+        return optim.SGD(parameters, lr=opt.learning_rate,weight_decay=opt.l2)
     elif opt.optim == 'adam':
-        return optim.Adam(parameters, lr=opt.learning_rate)
+        return optim.Adam(parameters, lr=opt.learning_rate,weight_decay=opt.l2)
     elif opt.optim == 'adagrad':
-        return optim.Adagrad(parameters, lr=opt.learning_rate)
+        return optim.Adagrad(parameters, lr=opt.learning_rate,weight_decay=opt.l2)
     elif opt.optim == 'adadelta':
-        return optim.Adadelta(parameters, lr=opt.learning_rate)
+        return optim.Adadelta(parameters, lr=opt.learning_rate,weight_decay=opt.l2)
 
 
 class dt_paralell_model(nn.Module):
@@ -48,6 +48,7 @@ class dt_paralell_model(nn.Module):
         self.use_gold = options.use_gold
         self.prior_dict = None
         self.gold_dict = None
+        self.initial_Flag = False
         # Loading external pre-trained embeddings
         if self.external_embedding != None:
             print 'Loading external embeddings'
@@ -70,8 +71,8 @@ class dt_paralell_model(nn.Module):
         self.dropout1 = nn.Dropout(p=self.dropout_ratio)
         self.dropout2 = nn.Dropout(p=self.dropout_ratio)
 
-        self.feat2trans = nn.Linear(2 * (self.tdim + self.trans_pos_dim) + self.ddim, self.trans_hidden)
-        self.feat2trans_back = nn.Linear(2 * (self.tdim + self.trans_pos_dim) + self.ddim, self.trans_hidden)
+        self.feat2trans = nn.Linear(2 * (self.tdim + self.pdim) + self.ddim, self.trans_hidden)
+        self.feat2trans_back = nn.Linear(2 * (self.tdim + self.pdim) + self.ddim, self.trans_hidden)
         # self.feat2trans = nn.Linear(2 * (self.tdim) + self.ddim, self.trans_hidden)
         if self.use_context:
             self.context2trans = nn.Linear(4 * self.hidden_dim, self.hidden_dim)
@@ -83,7 +84,7 @@ class dt_paralell_model(nn.Module):
 
         self.plookup = nn.Embedding(len(pos), self.pdim)
         self.tran_pos = nn.Embedding(len(pos), self.pdim)
-        # self.dlookup = nn.Embedding(self.dist_num * 2 + 1, self.ddim)
+        #self.dlookup = nn.Embedding(self.dist_num * 2 + 1, self.ddim)
         self.dlookup = nn.Embedding(self.dist_num + 1, self.ddim)
         # self.transitions = nn.Embedding(self.tag_num * self.tag_num, 1)
         # self.transition_map = self.set_transitions()
@@ -98,7 +99,10 @@ class dt_paralell_model(nn.Module):
 
     def evaluate(self, batch_pos, batch_words, batch_sen, crf_scores):
         batch_size, sentence_length = batch_pos.data.shape
-        scores = np.copy(crf_scores.cpu().data.numpy())
+        if not self.initial_Flag:
+            scores = np.copy(crf_scores.cpu().data.numpy())
+        else:
+            scores = np.zeros((batch_size,sentence_length,sentence_length,self.tag_num,self.tag_num))
         for sentence_id in range(batch_size):
             for i in range(sentence_length):
                 for j in range(sentence_length):
@@ -199,16 +203,7 @@ class dt_paralell_model(nn.Module):
     def compute_context(self, hidden_out, trans_masks, trans_masks_back):
         batch_size, sentence_length, _ = hidden_out.data.shape
         context_var = []
-        context_feat_h = hidden_out.unsqueeze(2)
-        context_feat_m = context_feat_h.permute(0, 2, 1, 3)
-        context_feat_h = context_feat_h.repeat(1, 1, sentence_length, 1)
-        context_feat_m = context_feat_m.repeat(1, sentence_length, 1, 1)
-        context_feat_h = context_feat_h.unsqueeze(3)
-        context_feat_h = context_feat_h.unsqueeze(4)
-        context_feat_m = context_feat_m.unsqueeze(3)
-        context_feat_m = context_feat_m.unsqueeze(4)
-        context_feat_h = context_feat_h.repeat(1, 1, 1, self.tag_num, self.tag_num, 1)
-        context_feat_m = context_feat_m.repeat(1, 1, 1, self.tag_num, self.tag_num, 1)
+        context_feat_h,context_feat_m = utils.compute_trans('sentence',batch_size,sentence_length,self.tag_num,hidden_out)
         context_var.append(context_feat_h)
         context_var.append(context_feat_m)
         context_var = torch.cat(context_var, dim=5)
@@ -231,18 +226,13 @@ class dt_paralell_model(nn.Module):
     def compute_neural_crf_scores(self, lstm_feats, trans_matrix, hidden_out, trans_masks, trans_back_masks):
         _, sentence_length, _ = lstm_feats.data.shape
         unary_potential = lstm_feats.unsqueeze(1)
-
         unary_potential = unary_potential.repeat(1, sentence_length, 1, 1)
         unary_potential = unary_potential.unsqueeze(4)
         unary_potential = unary_potential.repeat(1, 1, 1, 1, self.tag_num)
-        # unary_potential_h = lstm_feats.unsqueeze(2)
-        # unary_potential_h = unary_potential_h.repeat(1, 1, sentence_length, 1)
-        # unary_potential_h = unary_potential_h.unsqueeze(3)
-        # unary_potential_h = unary_potential_h.repeat(1, 1, 1, self.tag_num, 1)
         #crf_scores = unary_potential + unary_potential_h
 
         crf_scores = unary_potential + trans_matrix
-        #crf_scores += trans_matrix
+        #crf_scores = trans_matrix
         if self.use_context:
             context_var = self.compute_context(hidden_out, trans_masks, trans_back_masks)
             crf_scores = crf_scores + context_var
@@ -257,18 +247,9 @@ class dt_paralell_model(nn.Module):
         trans_var = []
         batch_size, sentence_length = batch_pos.data.shape
         # POS features
-        pos_emb = self.trans_pos_emb(batch_pos)
-        pos_emb_h = pos_emb.unsqueeze(2)
-        pos_emb_m = pos_emb_h.permute(0, 2, 1, 3)
-        pos_emb_h = pos_emb_h.repeat(1, 1, sentence_length, 1)
-        pos_emb_m = pos_emb_m.repeat(1, sentence_length, 1, 1)
-        pos_emb_h = pos_emb_h.unsqueeze(3)
-        pos_emb_h = pos_emb_h.unsqueeze(4)
-        pos_emb_m = pos_emb_m.unsqueeze(3)
-        pos_emb_m = pos_emb_m.unsqueeze(4)
-        pos_emb_h = pos_emb_h.repeat(1, 1, 1, self.tag_num, self.tag_num, 1)
-        pos_emb_m = pos_emb_m.repeat(1, 1, 1, self.tag_num, self.tag_num, 1)
-
+        #pos_emb = self.trans_pos_emb(batch_pos)
+        pos_emb = self.plookup(batch_pos)
+        pos_emb_h,pos_emb_m = utils.compute_trans('sentence',batch_size,sentence_length,self.tag_num,pos_emb)
         trans_var.append(pos_emb_h)
         trans_var.append(pos_emb_m)
         # Tag feature
@@ -277,18 +258,7 @@ class dt_paralell_model(nn.Module):
             tag_list.append(i)
         tag_var = utils.list2Variable(tag_list, self.gpu)
         tag_emb = self.tlookup(tag_var)
-        tag_emb_h = tag_emb.unsqueeze(1)
-        tag_emb_m = tag_emb_h.permute(1, 0, 2)
-        tag_emb_h = tag_emb_h.repeat(1, self.tag_num, 1)
-        tag_emb_m = tag_emb_m.repeat(self.tag_num, 1, 1)
-        tag_emb_h = tag_emb_h.unsqueeze(0)
-        tag_emb_h = tag_emb_h.unsqueeze(0)
-        tag_emb_h = tag_emb_h.unsqueeze(0)
-        tag_emb_m = tag_emb_m.unsqueeze(0)
-        tag_emb_m = tag_emb_m.unsqueeze(0)
-        tag_emb_m = tag_emb_m.unsqueeze(0)
-        tag_emb_h = tag_emb_h.repeat(batch_size, sentence_length, sentence_length, 1, 1, 1)
-        tag_emb_m = tag_emb_m.repeat(batch_size, sentence_length, sentence_length, 1, 1, 1)
+        tag_emb_h,tag_emb_m = utils.compute_trans('tag',batch_size,sentence_length,self.tag_num,tag_emb)
         trans_var.append(tag_emb_h)
         trans_var.append(tag_emb_m)
         # Distance feature
@@ -307,11 +277,7 @@ class dt_paralell_model(nn.Module):
             dist_list.append(head_list)
         dist_var = utils.list2Variable(dist_list, self.gpu)
         dist_emb = self.dlookup(dist_var)
-        dist_emb = dist_emb.unsqueeze(2)
-        dist_emb = dist_emb.unsqueeze(3)
-        dist_emb = dist_emb.repeat(1, 1, self.tag_num, self.tag_num, 1)
-        dist_emb = dist_emb.unsqueeze(0)
-        dist_emb = dist_emb.repeat(batch_size, 1, 1, 1, 1, 1)
+        dist_emb = utils.compute_trans('global',batch_size,sentence_length,self.tag_num,dist_emb)
         trans_var.append(dist_emb)
         trans = torch.cat(trans_var, dim=5)
 
@@ -330,7 +296,7 @@ class dt_paralell_model(nn.Module):
         trans_matrix_back = trans_matrix_back.masked_fill(trans_back_masks, 0.0)
 
         trans_matrix = trans_matrix_forward + trans_matrix_back
-
+        #trans_matrix = trans_matrix_forward
         return trans_matrix
 
     def get_tree_score(self, crf_score, scores, best_parse, partition, batch_sen):
@@ -360,7 +326,7 @@ class dt_paralell_model(nn.Module):
         w_embeds = self.wlookup(batch_words)
         p_embeds = self.plookup(batch_pos)
 
-        # w_embeds = self.dropout1(w_embeds)
+        w_embeds = self.dropout1(w_embeds)
 
         batch_input = torch.cat((w_embeds, p_embeds), 2)
         hidden_out, _ = self.lstm(batch_input)

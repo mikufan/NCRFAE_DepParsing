@@ -35,6 +35,7 @@ if __name__ == '__main__':
     parser.add_option("--optim", type="string", dest="optim", default='adam')
     parser.add_option("--lr", type="float", dest="learning_rate", default=0.01)
     parser.add_option("--outdir", type="string", dest="output", default="output")
+    parser.add_option("--l2",type="float",dest="l2",default=0.0)
 
     parser.add_option("--lstmdims", type="int", dest="lstm_dims", default=125)
     parser.add_option("--distdim", type="int", dest="dist_dim", default=1)
@@ -45,6 +46,7 @@ if __name__ == '__main__':
     parser.add_option("--prior_weight", type="float", dest="prior_weight", default=0.0)
     parser.add_option("--rule_type",type="string",dest="rule_type",default="WSJ")
     parser.add_option("--use_gold",action="store_true",dest="use_gold",default=False)
+    parser.add_option("--use_initial",action="store_true",dest="use_initial",default=False)
 
     parser.add_option("--predict", action="store_true", dest="predictFlag", default=False)
 
@@ -108,12 +110,14 @@ if __name__ == '__main__':
         print 'Starting epoch', epoch
         print 'To train encoder'
         dependencyTaggingPl_model.train()
+        if epoch == 0 and options.use_initial:
+            dependencyTaggingPl_model.initial_Flag = True
         for n in range(options.e_pass):
             iter_loss = 0.0
             training_likelihood = 0.0
             print 'Encoder training iteration ', n
             tot_batch = len(batch_data)
-            random.shuffle(batch_data)
+            #random.shuffle(batch_data)
             for batch_id, one_batch in tqdm(
                     enumerate(batch_data), mininterval=2,
                     desc=' -Tot it %d (epoch %d)' % (tot_batch, 0), leave=False, file=sys.stdout):
@@ -126,7 +130,6 @@ if __name__ == '__main__':
                                                                          batch_sen)
                 training_likelihood += batch_likelihood
                 batch_loss.backward()
-                # print ' loss for the batch', param.get_scalar(batch_loss, 0)
                 dependencyTaggingPl_model.trainer.step()
                 dependencyTaggingPl_model.trainer.zero_grad()
                 iter_loss += param.get_scalar(batch_loss.cpu(), 0)
@@ -134,6 +137,9 @@ if __name__ == '__main__':
             print ' loss for this iteration ', iter_loss
 
             print 'likelihood for this iteration ', training_likelihood
+
+            if dependencyTaggingPl_model.initial_Flag:
+                dependencyTaggingPl_model.initial_Flag = False
         print 'To train decoder'
         if options.dir_flag:
             dir_dim = 2
