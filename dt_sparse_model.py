@@ -23,19 +23,18 @@ def get_optim(opt, parameters):
         return optim.Adadelta(parameters, lr=opt.learning_rate, weight_decay=opt.l2)
 
 
-class dt_paralell_model(nn.Module):
-    def __init__(self, w2i, pos, options):
-        super(dt_paralell_model, self).__init__()
+class sparse_model(nn.Module):
+    def __init__(self, w2i, pos, feats,options):
+        super(sparse_model, self).__init__()
         self.tag_num = options.tag_num
         self.dist_num = options.dist_num
         self.embedding_dim = options.wembedding_dim
         self.pdim = options.pembedding_dim
-        self.hidden_dim = options.hidden_dim
-        self.n_layer = options.n_layer
         self.external_embedding = options.external_embedding
         self.dist_dim = options.dist_dim
         self.vocab = {word: ind for word, ind in w2i.iteritems()}
         self.pos = {word: ind for ind, word in enumerate(pos)}
+        self.feats = feats
         self.gpu = options.gpu
         self.tdim = options.tag_dim
         self.ddim = options.ddim
@@ -43,45 +42,21 @@ class dt_paralell_model(nn.Module):
         self.dropout_ratio = options.dropout_ratio
         self.dir_flag = options.dir_flag
         self.use_lex = options.use_lex
-        self.use_context = options.use_context
         self.prior_weight = options.prior_weight
         self.use_gold = options.use_gold
         self.prior_dict = None
         self.gold_dict = None
-        self.initial_Flag = False
-        self.use_trigram = options.use_trigram
-
-        self.lstm = nn.LSTM(self.embedding_dim + self.pdim, self.hidden_dim, self.n_layer, bidirectional=True,
+        self.hidden_dim = options.hidden_dim
+        self.plookup = nn.Embedding(len(pos), self.pdim)
+        self.lstm = nn.LSTM(self.embedding_dim + self.pdim, self.hidden_dim, bidirectional=True,
                             dropout=self.dropout_ratio)
-        # self.hidden2tags = nn.Linear(self.hidden_dim, self.tag_num)
         self.hidden2tags = nn.Linear(2 * self.hidden_dim, self.tag_num)
-        self.pre_hidden = nn.Linear(2 * self.hidden_dim, self.hidden_dim)
-        self.trans_hidden = options.trans_hidden
+
         self.dropout1 = nn.Dropout(p=self.dropout_ratio)
         self.dropout2 = nn.Dropout(p=self.dropout_ratio)
-        # Unigram feature layers
-        self.unifeat2trans = nn.Linear((self.tdim + self.pdim) + self.ddim, self.trans_hidden)
-        self.unifeat2trans_back = nn.Linear((self.tdim + self.pdim) + self.ddim, self.trans_hidden)
-        self.uni_out_layer = nn.Linear(self.trans_hidden, 1)
-        # Bigram feature layers
-        self.feat2trans = nn.Linear(2 * (self.tdim + self.pdim) + self.ddim, self.trans_hidden)
-        self.feat2trans_back = nn.Linear(2 * (self.tdim + self.pdim) + self.ddim, self.trans_hidden)
-        self.out_layer = nn.Linear(self.trans_hidden, 1)
-        # Trigram feature layers
-        self.trifeat2trans = nn.Linear(6 * self.pdim + self.ddim, self.trans_hidden)
-        self.trifeat2trans_back = nn.Linear(6 * self.pdim + self.ddim, self.trans_hidden)
-        self.tri_out_layer = nn.Linear(self.trans_hidden,1)
 
-        if self.use_context:
-            self.context2trans = nn.Linear(4 * self.hidden_dim, self.hidden_dim)
-            self.context2trans_back = nn.Linear(4 * self.hidden_dim, self.hidden_dim)
-            self.context_out_layer = nn.Linear(self.hidden_dim, 1)
-
-        self.tlookup = nn.Embedding(self.tag_num, self.tdim)
-
-        self.plookup = nn.Embedding(len(pos), self.pdim)
-        # self.dlookup = nn.Embedding(self.dist_num * 2 + 1, self.ddim)
-        self.dlookup = nn.Embedding(self.dist_num + 1, self.ddim)
+        self.feat_param = nn.Embedding(len(self.feats.keys()),1)
+        self.feat_param.weight.data = torch.zeros((len(self.feats.keys()),1))
 
         self.recons_param, self.lex_param = None, None
         self.trainer = get_optim(options, self.parameters())
@@ -90,8 +65,6 @@ class dt_paralell_model(nn.Module):
         self.partition_table = {}
         self.encoder_score_table = {}
         self.parse_results = {}
-
-        self.apply(utils.init_weight)
 
         # Loading external pre-trained embeddings
         if self.external_embedding != None:
@@ -110,10 +83,7 @@ class dt_paralell_model(nn.Module):
 
     def evaluate(self, batch_pos, batch_words, batch_sen, crf_scores):
         batch_size, sentence_length = batch_pos.data.shape
-        if not self.initial_Flag:
-            scores = np.copy(crf_scores.cpu().data.numpy())
-        else:
-            scores = np.zeros((batch_size, sentence_length, sentence_length, self.tag_num, self.tag_num))
+        scores = np.copy(crf_scores.cpu().data.numpy())
         for sentence_id in range(batch_size):
             for i in range(sentence_length):
                 for j in range(sentence_length):
@@ -212,33 +182,7 @@ class dt_paralell_model(nn.Module):
             crf_scores = crf_scores.cuda()
         return crf_scores.double()
 
-    def compute_context(self, hidden_out, trans_masks, trans_masks_back):
-        batch_size, sentence_length, _ = hidden_out.data.shape
-        context_var = []
-        context_feat_h, context_feat_m = utils.compute_trans('sentence', batch_size, sentence_length, self.tag_num,
-                                                             hidden_out)
-        context_var.append(context_feat_h)
-        context_var.append(context_feat_m)
-        context_var = torch.cat(context_var, dim=5)
-        context_var_forward = self.context2trans(context_var)
-        context_var_back = self.context2trans_back(context_var)
-        context_var_forward = F.relu(context_var_forward)
-        context_var_forward = self.context_out_layer(context_var_forward)
-        context_var_back = F.relu(context_var_back)
-        context_var_back = self.context_out_layer(context_var_back)
-        context_var_forward = context_var_forward.contiguous().view(batch_size, sentence_length, sentence_length,
-                                                                    self.tag_num, self.tag_num)
-        context_var_back = context_var_back.contiguous().view(batch_size, sentence_length, sentence_length,
-                                                              self.tag_num, self.tag_num)
-        context_var_forward = context_var_forward.masked_fill(trans_masks, 0.0)
-        context_var_back = context_var_back.masked_fill(trans_masks_back, 0.0)
-        context_var_matrix = context_var_forward + context_var_back
-        context_var_matrix = torch.sigmoid(context_var_matrix)
-        # context_var_matrix = context_var_forward
-        return context_var_matrix
-
-    def compute_neural_crf_scores(self, lstm_feats, trans_matrix, hidden_out, trigram_trans, trans_masks,
-                                  trans_back_masks):
+    def compute_crf_scores(self, lstm_feats, trans_matrix):
         _, sentence_length, _ = lstm_feats.data.shape
         unary_potential = lstm_feats.unsqueeze(1)
         unary_potential = unary_potential.repeat(1, sentence_length, 1, 1)
@@ -246,103 +190,20 @@ class dt_paralell_model(nn.Module):
         unary_potential = unary_potential.repeat(1, 1, 1, 1, self.tag_num)
         unary_potential = F.relu(unary_potential)
         crf_scores = unary_potential + trans_matrix
-        #crf_scores = unary_potential
-        if self.use_trigram:
-            crf_scores = crf_scores + trigram_trans
-        if self.use_context:
-            context_var = self.compute_context(hidden_out, trans_masks, trans_back_masks)
-            crf_scores = crf_scores + context_var
-            # crf_scores = context_var
         crf_scores = crf_scores.double()
         if torch.cuda.is_available():
             crf_scores = crf_scores.cuda()
         return crf_scores
 
-    def compute_trans(self, batch_pos, trans_masks, trans_back_masks):
+    def compute_trans(self, batch_feats):
 
-        trans_var = []
-        batch_size, sentence_length = batch_pos.data.shape
-        # POS features
-        # pos_emb = self.trans_pos_emb(batch_pos)
-        pos_emb = self.plookup(batch_pos)
-        pos_emb_h, pos_emb_m = utils.compute_trans('sentence', batch_size, sentence_length, self.tag_num, pos_emb)
-        trans_var.append(pos_emb_h)
-        trans_var.append(pos_emb_m)
-        # Tag feature
-        tag_list = []
-        for i in range(self.tag_num):
-            tag_list.append(i)
-        tag_var = utils.list2Variable(tag_list, self.gpu)
-        tag_emb = self.tlookup(tag_var)
-        tag_emb_h, tag_emb_m = utils.compute_trans('tag', batch_size, sentence_length, self.tag_num, tag_emb)
-        trans_var.append(tag_emb_h)
-        trans_var.append(tag_emb_m)
-        # Distance feature
-        dist_list = list()
-        for i in range(sentence_length):
-            head_list = list()
-            for j in range(sentence_length):
-                # if abs(i - j) > self.dist_num:
-                #     head_list.append(np.sign(i - j) * self.dist_num + self.dist_num)
-                # else:
-                #     head_list.append(i - j + self.dist_num)
-                if abs(i - j) > self.dist_num:
-                    head_list.append(self.dist_num)
-                else:
-                    head_list.append(abs(i - j))
-            dist_list.append(head_list)
-        dist_var = utils.list2Variable(dist_list, self.gpu)
-        dist_emb = self.dlookup(dist_var)
-        dist_emb = utils.compute_trans('global', batch_size, sentence_length, self.tag_num, dist_emb)
-        trans_var.append(dist_emb)
-        trans = torch.cat(trans_var, dim=5)
-
-        # Different directions
-        trans_hidden = self.feat2trans(trans)
-        trans_hidden_back = self.feat2trans_back(trans)
-        trans_hidden = F.relu(trans_hidden)
-        trans_hidden_back = F.relu(trans_hidden_back)
-        trans_matrix_forward = self.out_layer(trans_hidden)
-        trans_matrix_back = self.out_layer(trans_hidden_back)
-        trans_matrix_forward = trans_matrix_forward.contiguous().view(batch_size, sentence_length, sentence_length,
-                                                                      self.tag_num, self.tag_num)
-        trans_matrix_back = trans_matrix_back.contiguous().view(batch_size, sentence_length, sentence_length,
-                                                                self.tag_num, self.tag_num)
-        trans_matrix_forward = trans_matrix_forward.masked_fill(trans_masks, 0.0)
-        trans_matrix_back = trans_matrix_back.masked_fill(trans_back_masks, 0.0)
-
-        trans_matrix = trans_matrix_forward + trans_matrix_back
-        # trans_matrix = trans_matrix_forward
-        #trans_matrix = F.sigmoid(trans_matrix)
-        return trans_matrix, dist_emb
-
-    def compute_trigram_trans(self, batch_trigram, dist_emb,trans_masks,trans_back_masks):
-        trigram_trans = []
-        batch_size, sentence_length, _ = batch_trigram.data.shape
-        batch_trigram = batch_trigram.contiguous().view(batch_size * sentence_length, 3)
-        trigram_emb = self.plookup(batch_trigram)
-        trigram_emb = trigram_emb.contiguous().view(batch_size, sentence_length, 3 * self.pdim)
-        trigram_emb_h, trigram_emb_m = utils.compute_trans('sentence', batch_size, sentence_length, self.tag_num,
-                                                           trigram_emb)
-        trigram_trans.append(trigram_emb_h)
-        trigram_trans.append(trigram_emb_m)
-        trigram_trans.append(dist_emb)
-        trigram_trans = torch.cat(trigram_trans, dim=5)
-        trigram_trans_forward = self.trifeat2trans(trigram_trans)
-        trigram_trans_back = self.trifeat2trans_back(trigram_trans)
-        trigram_trans_forward = F.relu(trigram_trans_forward)
-        trigram_trans_back = F.relu(trigram_trans_back)
-        trigram_trans_forward = self.tri_out_layer(trigram_trans_forward)
-        trigram_trans_back = self.tri_out_layer(trigram_trans_back)
-        trigram_trans_forward = trigram_trans_forward.contiguous().view(batch_size, sentence_length, sentence_length,
-                                                                      self.tag_num, self.tag_num)
-        trigram_trans_back = trigram_trans_back.contiguous().view(batch_size, sentence_length, sentence_length,
-                                                                        self.tag_num, self.tag_num)
-        trigram_trans_forward = trigram_trans_forward.masked_fill(trans_masks,0)
-        trigram_trans_back = trigram_trans_back.masked_fill(trans_back_masks,0)
-        trigram_trans_matrix = trigram_trans_forward + trigram_trans_back
-        trigram_trans_matrix = F.relu(trigram_trans_matrix)
-        return trigram_trans_matrix
+        batch_size, sentence_length,_,feat_num= batch_feats.data.shape
+        batch_feats = batch_feats.contiguous().view(batch_size*sentence_length*sentence_length,feat_num)
+        feat_emb = self.feat_param(batch_feats)
+        feat_emb = feat_emb.contiguous().view(batch_size,sentence_length,sentence_length,feat_num)
+        feat_emb = utils.compute_trans('trans', batch_size, sentence_length, self.tag_num, feat_emb)
+        trans_matrix = torch.sum(feat_emb,dim=5)
+        return trans_matrix
 
     def get_tree_score(self, crf_score, scores, best_parse, partition, batch_sen):
         best_parse = np.array(list(best_parse), dtype=int)
@@ -367,7 +228,7 @@ class dt_paralell_model(nn.Module):
         tree_score = torch.cat(tree_score)
         return tree_score, likelihood
 
-    def forward(self, batch_words, batch_pos, extrns, batch_sen, batch_trigram):
+    def forward(self, batch_words, batch_pos, extrns, batch_sen, batch_feats):
         batch_size, sentence_length = batch_words.data.size()
         w_embeds = self.wlookup(batch_words)
         p_embeds = self.plookup(batch_pos)
@@ -376,22 +237,11 @@ class dt_paralell_model(nn.Module):
 
         batch_input = torch.cat((w_embeds, p_embeds), 2)
         hidden_out, _ = self.lstm(batch_input)
-        trans_masks, trans_back_masks = self.construct_tran_mask(batch_size, sentence_length)
-        trans_matrix, dist_emb = self.compute_trans(batch_pos, trans_masks, trans_back_masks)
         hidden_out = self.dropout2(hidden_out)
         lstm_feats = self.hidden2tags(hidden_out)
-        # lstm_feats = self.hidden2tags(temp)
-        mask = self.construct_mask(batch_size, sentence_length)
-        if self.use_trigram:
-            trigram_trans = self.compute_trigram_trans(batch_trigram, dist_emb,trans_masks, trans_back_masks)
-        else:
-            trigram_trans = None
-        crf_scores = self.compute_neural_crf_scores(lstm_feats, trans_matrix, hidden_out, trigram_trans, trans_masks,
-                                                    trans_back_masks)
-        # crf_scores = self.computing_crf_scores(lstm_feats, batch_size, sentence_length)
-        if torch.cuda.is_available():
-            mask = mask.cuda()
-        crf_scores = crf_scores.masked_fill(mask, -np.inf)
+        trans_matrix = self.compute_trans(batch_feats)
+        crf_scores = self.compute_crf_scores(lstm_feats, trans_matrix)
+
         if not self.use_gold:
             scores = self.evaluate(batch_pos, batch_words, batch_sen, crf_scores)
             best_parse = eisner_parser.batch_parse(scores)

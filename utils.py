@@ -4,6 +4,8 @@ from itertools import groupby
 import torch.autograd as autograd
 import torch
 import numpy as np
+import torch.nn as nn
+from torch.nn.init import *
 
 
 class ConllEntry:
@@ -162,12 +164,75 @@ def traverse_feat(conll_path, tag_map, distdim):
     return flookup
 
 
+def update_features(featureSet, data_sentence):
+    entries = data_sentence.entries
+    for i in range(data_sentence.size):
+        for j in range(data_sentence.size):
+            if j == 0:
+                continue
+            if i == j:
+                continue
+            if i > j:
+                dir = 0
+            else:
+                dir = 1
+            if abs(i - j) > 5:
+                dist = 6
+            else:
+                dist = abs(i - j)
+            head = entries[i].pos
+            child = entries[j].pos
+            if i == 0:
+                head_left = "<START>"
+                head_right = "<START>"
+            elif i == 1:
+                if data_sentence.size == 2:
+                    head_left = "<START>"
+                    head_right = "<END>"
+                else:
+                    head_left = "<START>"
+                    head_right = entries[i + 1].pos
+            elif i == data_sentence.size - 1:
+                head_left = entries[i - 1].pos
+                head_right = "<END>"
+            else:
+                head_left = entries[i - 1].pos
+                head_right = entries[i + 1].pos
+            if j == 1:
+                if data_sentence.size == 2:
+                    child_left = "<START>"
+                    child_right = "<END>"
+                else:
+                    child_left = "<START>"
+                    child_right = entries[j + 1].pos
+            elif j == data_sentence.size - 1:
+                child_left = entries[j - 1].pos
+                child_right = "<END>"
+            else:
+                child_left = entries[j - 1].pos
+                child_right = entries[j + 1].pos
+
+            h_unary = (head, dir, dist)
+            m_unary = (child, dir, dist)
+            binary = (head, child, dir, dist)
+            h_left_trigram = (head_left, head, child, dir, dist)
+            h_right_trigram = (head, head_right, child, dir, dist)
+            m_left_trigram = (head, child_left, child, dir, dist)
+            m_right_trigram = (head, child, child_right, dir, dist)
+            featureSet.add(h_unary)
+            featureSet.add(m_unary)
+            featureSet.add(binary)
+            featureSet.add(h_left_trigram)
+            featureSet.add(h_right_trigram)
+            featureSet.add(m_left_trigram)
+            featureSet.add(m_right_trigram)
+
+
 def read_data(conll_path, isPredict):
     sentences = []
     if not isPredict:
         wordsCount = Counter()
         posCount = Counter()
-
         s_counter = 0
         with open(conll_path, 'r') as conllFP:
             for sentence in read_conll(conllFP):
@@ -178,6 +243,8 @@ def read_data(conll_path, isPredict):
                 s_counter += 1
         wordsCount['<UNKNOWN>'] = 0
         posCount['<UNKNOWN-POS>'] = 0
+        posCount['<START>'] = 1
+        posCount['<END>'] = 2
         return {w: i for i, w in enumerate(wordsCount.keys())}, {p: i for i, p in enumerate(
             posCount.keys())}, sentences
     else:
@@ -189,22 +256,27 @@ def read_data(conll_path, isPredict):
                 s_counter += 1
         return sentences
 
-# def find_trans(sentences,pos,tag_num):
-#     pos_num = len(pos.keys())
-#     trans_map = np.zeros((pos_num*tag_num,pos_num*tag_num),dtype = int)
-#     for i in range((pos_num*tag_num)*(pos_num*tag_num)):
-#         trans_map[i/(pos_num*tag_num)][i%(pos_num*tag_num)] = i
-#     trans_list = list()
-#     for sentence in sentences:
-#         s_trans = list()
-#         for i,h_entry in enumerate(sentence):
-#             h_trans_list = list()
-#             for j,m_entry in enumerate(sentence):
-#                 h_tag_num = pos[h_entry.pos]
-#                 m_tag_num = pos[m_entry.pos]
-#                 trans_idx = h_tag_num
-#
-#     return
+
+def read_sparse_data(conll_path, isPredict):
+    sentences = []
+    if not isPredict:
+        wordsCount = Counter()
+        posCount = Counter()
+        featureSet = set()
+        s_counter = 0
+        with open(conll_path, 'r') as conllFP:
+            for sentence in read_conll(conllFP):
+                wordsCount.update([node.norm for node in sentence if isinstance(node, ConllEntry)])
+                posCount.update([node.pos for node in sentence if isinstance(node, ConllEntry)])
+                ds = data_sentence(s_counter, sentence)
+                sentences.append(ds)
+                update_features(featureSet, ds)
+                s_counter += 1
+        wordsCount['<UNKNOWN>'] = 0
+        posCount['<UNKNOWN-POS>'] = 0
+        featureSet.add('<UNKNOWN-FEATS>')
+        return {w: i for i, w in enumerate(wordsCount.keys())}, {p: i for i, p in enumerate(
+            posCount.keys())}, {f: i for i, f in enumerate(featureSet)}, sentences
 
 
 def read_conll(fh):
@@ -225,7 +297,7 @@ def read_conll(fh):
         yield tokens
 
 
-def eval(predicted, gold, test_path,log_path,epoch):
+def eval(predicted, gold, test_path, log_path, epoch):
     correct_counter = 0
     total_counter = 0
     for s in range(len(gold)):
@@ -262,15 +334,15 @@ def eval(predicted, gold, test_path,log_path,epoch):
         f_w.write('\n')
     f_w.close()
     if epoch == 0:
-        log = open(log_path,'w')
-        log.write("UAS for epoch "+str(epoch))
+        log = open(log_path, 'w')
+        log.write("UAS for epoch " + str(epoch))
         log.write('\n')
         log.write('\n')
         log.write(str(accuracy))
         log.write('\n')
         log.write('\n')
     else:
-        log = open(log_path,'a')
+        log = open(log_path, 'a')
         log.write("UAS for epoch " + str(epoch))
         log.write('\n')
         log.write('\n')
@@ -446,7 +518,7 @@ def constituent_index(sentence_length):
                             kjcs[ids].append(idrc)
 
                     else:
-                        if k < j:
+                        if k < j and not (i==0 and k!=0):
                             # two complete spans to form an incomplete span
                             idli = span_2_id[(i, k, dir)]
                             ikis[ids].append(idli)
@@ -469,7 +541,8 @@ def get_index(b, id):
     id_b = id % b
     return (id_a, id_b)
 
-def use_external_embedding(extrn_emb,vocab):
+
+def use_external_embedding(extrn_emb, vocab):
     to_augment = {}
     extrn_dim = 0
     for line in extrn_emb:
@@ -479,18 +552,20 @@ def use_external_embedding(extrn_emb,vocab):
         extrn_dim = len(vector)
         if word in vocab.keys():
             to_augment[word] = vector
-    return extrn_dim,to_augment
+    return extrn_dim, to_augment
 
-def build_new_emb(original_emb,to_augment,vocab):
+
+def build_new_emb(original_emb, to_augment, vocab):
     augmented = np.copy(original_emb)
     for w in to_augment.keys():
         w_idx = vocab[w]
         augmented[w_idx] = to_augment[w]
     return augmented
 
-def construct_prior(prior_set,sentence,pos,tag_num,prior_weight):
+
+def construct_prior(prior_set, sentence, pos, tag_num, prior_weight):
     sentence_length = sentence.size
-    s_prior = np.zeros((sentence_length,sentence_length,tag_num,tag_num))
+    s_prior = np.zeros((sentence_length, sentence_length, tag_num, tag_num))
     for i in range(sentence_length):
         for j in range(sentence_length):
             if i == j:
@@ -499,12 +574,13 @@ def construct_prior(prior_set,sentence,pos,tag_num,prior_weight):
                 continue
             h_pos = sentence.entries[i].pos
             m_pos = sentence.entries[j].pos
-            tag_tuple = (h_pos,m_pos)
+            tag_tuple = (h_pos, m_pos)
             if tag_tuple in prior_set:
-                s_prior[i,j,:,:] = prior_weight
+                s_prior[i, j, :, :] = prior_weight
     return s_prior
 
-def compute_trans(feat_type,batch_size,sentence_length,tag_num,feat_emb):
+
+def compute_trans(feat_type, batch_size, sentence_length, tag_num, feat_emb):
     if feat_type == 'sentence':
         feat_emb_h = feat_emb.unsqueeze(2)
         feat_emb_m = feat_emb_h.permute(0, 2, 1, 3)
@@ -516,7 +592,7 @@ def compute_trans(feat_type,batch_size,sentence_length,tag_num,feat_emb):
         feat_emb_m = feat_emb_m.unsqueeze(4)
         feat_emb_h = feat_emb_h.repeat(1, 1, 1, tag_num, tag_num, 1)
         feat_emb_m = feat_emb_m.repeat(1, 1, 1, tag_num, tag_num, 1)
-        return feat_emb_h,feat_emb_m
+        return feat_emb_h, feat_emb_m
     if feat_type == 'tag':
         feat_emb_h = feat_emb.unsqueeze(1)
         feat_emb_m = feat_emb_h.permute(1, 0, 2)
@@ -530,7 +606,7 @@ def compute_trans(feat_type,batch_size,sentence_length,tag_num,feat_emb):
         feat_emb_m = feat_emb_m.unsqueeze(0)
         feat_emb_h = feat_emb_h.repeat(batch_size, sentence_length, sentence_length, 1, 1, 1)
         feat_emb_m = feat_emb_m.repeat(batch_size, sentence_length, sentence_length, 1, 1, 1)
-        return feat_emb_h,feat_emb_m
+        return feat_emb_h, feat_emb_m
     if feat_type == 'global':
         feat_emb = feat_emb.unsqueeze(2)
         feat_emb = feat_emb.unsqueeze(3)
@@ -538,5 +614,120 @@ def compute_trans(feat_type,batch_size,sentence_length,tag_num,feat_emb):
         feat_emb = feat_emb.unsqueeze(0)
         feat_emb = feat_emb.repeat(batch_size, 1, 1, 1, 1, 1)
         return feat_emb
+    if feat_type == 'trans':
+        feat_emb = feat_emb.unsqueeze(3)
+        feat_emb = feat_emb.unsqueeze(4)
+        feat_emb = feat_emb.repeat(1,1,1,tag_num,tag_num,1)
+        return feat_emb
 
 
+def init_weight(layer):
+    if isinstance(layer, nn.Linear):
+        xavier_uniform(layer.weight.data, 0.1)
+        constant(layer.bias, 0)
+    if isinstance(layer, nn.Embedding):
+        xavier_uniform(layer.weight.data, 0.1)
+    if isinstance(layer, nn.LSTM):
+        for p in layer.parameters():
+            if len(p.data.shape) > 1:
+                xavier_uniform(p.data, 0.1)
+            else:
+                constant(p, 0)
+
+
+def construct_trigram(s_pos,pos):
+    trigram_list = list()
+    for i in range(len(s_pos)):
+        if i == 0:
+            trigram = (pos['<START>'], s_pos[0], pos['<START>'])
+        elif i == 1:
+            if len(s_pos) > 2:
+                right_gram = s_pos[2]
+            else:
+                right_gram = pos['<END>']
+            trigram = (s_pos[0], s_pos[1], right_gram)
+        elif i == len(s_pos) - 1:
+            trigram = (s_pos[i - 1], s_pos[i], pos['<END>'])
+        else:
+            trigram = (s_pos[i - 1], s_pos[i], s_pos[i + 1])
+        trigram_list.append(trigram)
+    return trigram_list
+
+
+def construct_feats(feats, s):
+    feature_list = []
+    entries = s.entries
+    unknown_idx = feats['<UNKNOWN-FEATS>']
+    for i in range(len(entries)):
+        head_feature = []
+        for j in range(len(entries)):
+            single_feature = []
+            if j == 0:
+                for k in range(7):
+                    single_feature.append(unknown_idx)
+                head_feature.append(single_feature)
+                continue
+            if i == j:
+                for k in range(7):
+                    single_feature.append(unknown_idx)
+                head_feature.append(single_feature)
+                continue
+            if i > j:
+                dir = 0
+            else:
+                dir = 1
+            if abs(i - j) > 5:
+                dist = 6
+            else:
+                dist = abs(i - j)
+            head = entries[i].pos
+            child = entries[j].pos
+            if i == 0:
+                head_left = "<START>"
+                head_right = "<START>"
+            elif i == 1:
+                if len(entries) == 2:
+                    head_left = "<START>"
+                    head_right = "<END>"
+                else:
+                    head_left = "<START>"
+                    head_right = entries[i + 1].pos
+            elif i == len(entries) - 1:
+                head_left = entries[i - 1].pos
+                head_right = "<END>"
+            else:
+                head_left = entries[i - 1].pos
+                head_right = entries[i + 1].pos
+            if j == 1:
+                if len(entries) == 2:
+                    child_left = "<START>"
+                    child_right = "<END>"
+                else:
+                    child_left = "<START>"
+                    child_right = entries[j + 1].pos
+            elif j == len(entries) - 1:
+                child_left = entries[j - 1].pos
+                child_right = "<END>"
+            else:
+                child_left = entries[j - 1].pos
+                child_right = entries[j + 1].pos
+
+            h_unary = (head, dir, dist)
+            m_unary = (child, dir, dist)
+            binary = (head, child, dir, dist)
+            h_left_trigram = (head_left, head, child, dir, dist)
+            h_right_trigram = (head, head_right, child, dir, dist)
+            m_left_trigram = (head, child_left, child, dir, dist)
+            m_right_trigram = (head, child, child_right, dir, dist)
+            h_unary_idx = feats.get(h_unary, unknown_idx)
+            m_unary_idx = feats.get(m_unary, unknown_idx)
+            binary_idx = feats.get(binary, unknown_idx)
+            h_left_trigram_idx = feats.get(h_left_trigram, unknown_idx)
+            h_right_trigram_idx = feats.get(h_right_trigram, unknown_idx)
+            m_left_trigram_idx = feats.get(m_left_trigram, unknown_idx)
+            m_right_trigram_idx = feats.get(m_right_trigram, unknown_idx)
+            single_feature = [h_unary_idx, m_unary_idx, binary_idx, h_left_trigram_idx, h_right_trigram_idx,
+                              m_left_trigram_idx, m_right_trigram_idx]
+            head_feature.append(single_feature)
+        feature_list.append(head_feature)
+    return feature_list

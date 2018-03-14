@@ -180,7 +180,7 @@ def dp_inside_batch(batch_size,sentence_len,tags_dim,weights):
         inside_table = inside_table.cuda()
     m = sentence_len
     seed_spans, base_left_spans, base_right_spans, left_spans, right_spans, ijss, ikss, kjss, id_span_map, span_id_map = test_constituent_indexes(
-            m, True)
+            m, False)
 
     for ii in seed_spans:
         inside_table[:, ii, :, :] = 0.0
@@ -329,7 +329,7 @@ weights[2,1,1,1] = 0.7
 weights = torch.DoubleTensor(weights)
 weights = weights.unsqueeze(0)
 inside_table,ll = dp_inside_batch(1,3,2,weights)
-print ll
+
 
 
 
