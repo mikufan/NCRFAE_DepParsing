@@ -29,6 +29,7 @@ if __name__ == '__main__':
     parser.add_option("--idx", type="int", dest="model_idx", default=1)
 
     parser.add_option("--sample_idx", type="int", dest="sample_idx", default=1000)
+    parser.add_option("--use_trigram", action="store_true", dest="use_trigram", default=False)
 
     parser.add_option("--gpu", type="int", dest="gpu", default=-1, help='gpu id, set to -1 if use cpu mode')
 
@@ -62,6 +63,9 @@ if __name__ == '__main__':
         s_data_list.append(s_word)
         s_data_list.append(s_pos)
         s_data_list.append([sen_idx])
+        if options.use_trigram:
+            s_trigram = utils.construct_trigram(s_pos,pos)
+            s_data_list.append(s_trigram)
         data_list.append(s_data_list)
         sen_idx += 1
     batch_data = utils.construct_batch_data(data_list, options.batchsize)
@@ -74,6 +78,11 @@ if __name__ == '__main__':
                                             [s[2][0] for s in one_batch]
         batch_words_v = utils.list2Variable(batch_words, options.gpu)
         batch_pos_v = utils.list2Variable(batch_pos, options.gpu)
-        dependencyTaggingPl_model(batch_words_v, batch_pos_v, None, batch_sen)
+        if options.use_trigram:
+            batch_trigram = [s[3] for s in one_batch]
+            batch_trigram_v = utils.list2Variable(batch_trigram, options.gpu)
+        else:
+            batch_trigram_v = None
+        dependencyTaggingPl_model(batch_words_v, batch_pos_v, None, batch_sen,batch_trigram_v)
     test_res = dependencyTaggingPl_model.parse_results
     utils.eval(test_res, sentences, testpath,options.log,0)

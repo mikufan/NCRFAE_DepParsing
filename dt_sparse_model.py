@@ -10,6 +10,8 @@ import utils
 import time
 import torch.nn.functional as F
 import shutil
+import paskin_layer as PL
+import single_parse
 
 
 def get_optim(opt, parameters):
@@ -24,7 +26,7 @@ def get_optim(opt, parameters):
 
 
 class sparse_model(nn.Module):
-    def __init__(self, w2i, pos, feats,options):
+    def __init__(self, w2i, pos, feats, options):
         super(sparse_model, self).__init__()
         self.tag_num = options.tag_num
         self.dist_num = options.dist_num
@@ -32,8 +34,8 @@ class sparse_model(nn.Module):
         self.pdim = options.pembedding_dim
         self.external_embedding = options.external_embedding
         self.dist_dim = options.dist_dim
-        self.vocab = {word: ind for word, ind in w2i.iteritems()}
-        self.pos = {word: ind for ind, word in enumerate(pos)}
+        self.vocab = w2i
+        self.pos = pos
         self.feats = feats
         self.gpu = options.gpu
         self.tdim = options.tag_dim
@@ -55,9 +57,9 @@ class sparse_model(nn.Module):
         self.dropout1 = nn.Dropout(p=self.dropout_ratio)
         self.dropout2 = nn.Dropout(p=self.dropout_ratio)
 
-        self.feat_param = nn.Embedding(len(self.feats.keys()),1)
-        self.feat_param.weight.data = torch.zeros((len(self.feats.keys()),1))
-
+        self.feat_param = nn.Embedding(len(self.feats.keys()), 1)
+        self.feat_param.weight.data = torch.zeros((len(self.feats.keys()), 1))
+        # self.feat_param.weight.data.fill_(1e-8)
         self.recons_param, self.lex_param = None, None
         self.trainer = get_optim(options, self.parameters())
 
@@ -106,7 +108,8 @@ class sparse_model(nn.Module):
                     else:
                         dir = 0
                     if not self.recons_param is None:
-                        scores[sentence_id, i, j, :, :] += np.log(self.recons_param[h_pos_id, :, m_pos_id, dist, dir])
+                        scores[sentence_id, i, j, :, :] += np.log(
+                            self.recons_param[h_pos_id, :, m_pos_id, dist, dir]).reshape(self.tag_num, 1)
                     if self.use_lex:
                         scores[sentence_id, i, j, :, :] += np.log(self.lex_param[m_pos_id, :, word_id]
                                                                   .reshape(1, self.tag_num))
@@ -182,14 +185,15 @@ class sparse_model(nn.Module):
             crf_scores = crf_scores.cuda()
         return crf_scores.double()
 
-    def compute_crf_scores(self, lstm_feats, trans_matrix):
-        _, sentence_length, _ = lstm_feats.data.shape
-        unary_potential = lstm_feats.unsqueeze(1)
-        unary_potential = unary_potential.repeat(1, sentence_length, 1, 1)
-        unary_potential = unary_potential.unsqueeze(4)
-        unary_potential = unary_potential.repeat(1, 1, 1, 1, self.tag_num)
-        unary_potential = F.relu(unary_potential)
-        crf_scores = unary_potential + trans_matrix
+    def compute_crf_scores(self, trans_matrix):
+        # _, sentence_length, _ = lstm_feats.data.shape
+        # unary_potential = lstm_feats.unsqueeze(1)
+        # unary_potential = unary_potential.repeat(1, sentence_length, 1, 1)
+        # unary_potential = unary_potential.unsqueeze(4)
+        # unary_potential = unary_potential.repeat(1, 1, 1, 1, self.tag_num)
+        # unary_potential = F.relu(unary_potential)
+        # crf_scores = unary_potential + trans_matrix
+        crf_scores = trans_matrix.clone()
         crf_scores = crf_scores.double()
         if torch.cuda.is_available():
             crf_scores = crf_scores.cuda()
@@ -197,13 +201,16 @@ class sparse_model(nn.Module):
 
     def compute_trans(self, batch_feats):
 
-        batch_size, sentence_length,_,feat_num= batch_feats.data.shape
-        batch_feats = batch_feats.contiguous().view(batch_size*sentence_length*sentence_length,feat_num)
+        batch_size, sentence_length, _, feat_num = batch_feats.data.shape
+        batch_feats = batch_feats.contiguous().view(batch_size * sentence_length * sentence_length, feat_num)
         feat_emb = self.feat_param(batch_feats)
-        feat_emb = feat_emb.contiguous().view(batch_size,sentence_length,sentence_length,feat_num)
+        feat_emb = feat_emb.contiguous().view(batch_size, sentence_length, sentence_length, feat_num)
         feat_emb = utils.compute_trans('trans', batch_size, sentence_length, self.tag_num, feat_emb)
-        trans_matrix = torch.sum(feat_emb,dim=5)
-        return trans_matrix
+        l1 = self.feat_param.weight.norm(1)
+        trans_matrix = torch.sum(feat_emb, dim=5)
+        # l1 = trans_matrix.norm(1)
+
+        return trans_matrix, l1
 
     def get_tree_score(self, crf_score, scores, best_parse, partition, batch_sen):
         best_parse = np.array(list(best_parse), dtype=int)
@@ -230,21 +237,29 @@ class sparse_model(nn.Module):
 
     def forward(self, batch_words, batch_pos, extrns, batch_sen, batch_feats):
         batch_size, sentence_length = batch_words.data.size()
-        w_embeds = self.wlookup(batch_words)
-        p_embeds = self.plookup(batch_pos)
+        # w_embeds = self.wlookup(batch_words)
+        # p_embeds = self.plookup(batch_pos)
+        #
+        # w_embeds = self.dropout1(w_embeds)
+        #
+        # batch_input = torch.cat((w_embeds, p_embeds), 2)
+        # hidden_out, _ = self.lstm(batch_input)
+        # hidden_out = self.dropout2(hidden_out)
+        # lstm_feats = self.hidden2tags(hidden_out)
+        trans_matrix, l1 = self.compute_trans(batch_feats)
 
-        w_embeds = self.dropout1(w_embeds)
-
-        batch_input = torch.cat((w_embeds, p_embeds), 2)
-        hidden_out, _ = self.lstm(batch_input)
-        hidden_out = self.dropout2(hidden_out)
-        lstm_feats = self.hidden2tags(hidden_out)
-        trans_matrix = self.compute_trans(batch_feats)
-        crf_scores = self.compute_crf_scores(lstm_feats, trans_matrix)
-
-        if not self.use_gold:
+        mask = self.construct_mask(batch_size, sentence_length)
+        if torch.cuda.is_available():
+            mask = mask.cuda()
+        crf_scores = self.compute_crf_scores(trans_matrix)
+        crf_scores = crf_scores.masked_fill(mask, -np.inf)
+        if not self.use_gold or (self.use_gold and not self.training):
             scores = self.evaluate(batch_pos, batch_words, batch_sen, crf_scores)
             best_parse = eisner_parser.batch_parse(scores)
+            # best_parse = np.zeros((2, batch_size, sentence_length))
+            # for i in range(batch_size):
+            #     single_score = scores[i].reshape(sentence_length,sentence_length)
+            #     best_parse[0][i] = single_parse.parse_proj(single_score)
         else:
             scores = np.copy(crf_scores.cpu().data.numpy())
             best_parse = np.zeros((2, batch_size, sentence_length))
@@ -256,12 +271,15 @@ class sparse_model(nn.Module):
             self.parse_results[batch_sen[i]] = (best_parse[0][i], best_parse[1][i])
 
         eisner = EL.eisner_layer(sentence_length, self.tag_num, batch_size)
+        #paskin = PL.PASKIN(sentence_length, self.tag_num, batch_size, False)
         partition = eisner(crf_scores)
+        #paskin_weights = crf_scores.permute(0,1,3,2,4)
+        #partition = paskin(paskin_weights)
         best_tree_score, batch_likelihood = self.get_tree_score(crf_scores, scores, best_parse, partition, batch_sen)
+        # loss = partition - best_tree_score.contiguous().view(batch_size,1)
         loss = partition - best_tree_score
         loss = loss.sum() / batch_size
-
-        return loss, batch_likelihood
+        return loss, batch_likelihood, l1
 
     def hard_em_e(self, batch_pos, batch_words, sen_idx, recons_counter, lex_counter):
         batch_likelihood = 0.0
@@ -269,19 +287,17 @@ class sparse_model(nn.Module):
         batch_score = []
         for sentence_id in range(batch_size):
             sidx = sen_idx[sentence_id]
-            sentence_scores = self.tree_param[sidx]
+            sentence_scores = np.copy(self.tree_param[sidx])
             if self.prior_weight > 0 and self.training:
                 sentence_scores += self.prior_dict[sidx]
             batch_score.append(sentence_scores)
         batch_score = np.array(batch_score)
-        # start = time.time()
         best_parse = eisner_parser.batch_parse(batch_score)
-        # print 'Time cost in parsing this batch ', time.time() - start
         for sentence_id in range(batch_size):
             sentence_pos = batch_pos[sentence_id]
             sentence_words = batch_words[sentence_id]
             sidx = sen_idx[sentence_id]
-            sentence_scores = self.tree_param[sidx]
+            sentence_scores = np.copy(self.tree_param[sidx])
             s_log_likelihood = param.counter_update(best_parse[0][sentence_id], best_parse[1][sentence_id],
                                                     sentence_scores, recons_counter, lex_counter, sentence_pos,
                                                     sentence_words, self.dist_dim, self.partition_table[sidx],
@@ -327,6 +343,7 @@ class sparse_model(nn.Module):
         return self._apply(lambda t: t.cuda(device_id))
 
     def init_decoder_param(self, data):
+        sid = 0
         if self.dir_flag:
             dir_dim = 2
         else:
@@ -338,10 +355,13 @@ class sparse_model(nn.Module):
         self.lex_param = np.zeros((pos_num, self.tag_num, word_num), dtype=np.float64)
         max_dist = self.dist_dim - 1
         root_idx = self.pos['ROOT-POS']
+        unknown_idx = self.pos['<UNKNOWN-POS>']
         for child_idx in range(pos_num):
             if child_idx == root_idx:
                 continue
-            self.recons_param[root_idx, 0, child_idx, :, dir_dim - 1] = 1. / (pos_num - 1)
+            if child_idx == unknown_idx:
+                continue
+            self.recons_param[root_idx, 0, child_idx, :, dir_dim - 1] = 1. / (pos_num - 2)
         smoothing = 0.000001
         for sentence in data:
             for i, h_entry in enumerate(sentence.entries):
@@ -372,8 +392,11 @@ class sparse_model(nn.Module):
                     if self.use_lex:
                         self.lex_param[m_pos_id, :, word_id] += 1
                     self.recons_param[h_pos_id, :, m_pos_id, dist, dir] += 1. / span
+            sid += 1
         for i in range(pos_num):
             if i == root_idx:
+                continue
+            if i == unknown_idx:
                 continue
             child_sum = np.sum(self.recons_param[i, :, :, :, :], axis=1)
             # smoothing_child = np.empty((pos_num, self.dist_dim, dir_dim))
@@ -391,3 +414,43 @@ class sparse_model(nn.Module):
             lex_sum = np.sum(self.lex_param, axis=2) + np.sum(lex_smoothing, axis=2)
             lex_sum = lex_sum.reshape(pos_num, self.tag_num, 1)
             self.lex_param = (self.lex_param + lex_smoothing) / lex_sum
+
+    def golden_init_decoder(self, data):
+        if self.dir_flag:
+            dir_dim = 2
+        else:
+            dir_dim = 1
+        smoothing = 1e-8
+        pos_num = len(self.pos.keys())
+        self.recons_param = np.zeros(
+            (pos_num, self.tag_num, pos_num, self.dist_dim, dir_dim), dtype=np.float64)
+        max_dist = self.dist_dim - 1
+        for sentence in data:
+            for i, m_entry in enumerate(sentence.entries):
+                h = m_entry.parent_id
+                h = int(h)
+                if h == -1:
+                    continue
+                dist = abs(i - h) - 1
+                if dist > max_dist:
+                    dist = max_dist
+                if self.dir_flag:
+                    if i < h:
+                        dir = 1
+                    else:
+                        dir = 0
+                else:
+                    dir = 0
+                h_entry = sentence.entries[h]
+                h_pos = h_entry.pos
+                m_pos = m_entry.pos
+                h_pos_id = self.pos.get(h_pos)
+                m_pos_id = self.pos.get(m_pos)
+                self.recons_param[h_pos_id, :, m_pos_id, dist, dir] += 1
+        smoothing_child = np.empty((pos_num, self.dist_dim, dir_dim))
+        smoothing_child.fill(smoothing)
+        smoothing_child_sum = np.sum(smoothing_child, axis=0)
+        child_sum = np.sum(self.recons_param, axis=2).reshape(pos_num, self.tag_num, 1, self.dist_dim, dir_dim)
+        for i in range(pos_num):
+            self.recons_param[i, :, :, :, :] = (self.recons_param[i, :, :, :, :] + smoothing_child) / (
+                child_sum[i] + smoothing_child_sum)

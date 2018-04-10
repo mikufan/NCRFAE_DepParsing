@@ -264,11 +264,13 @@ def batch_parse(batch_scores):
     # CYK table
     complete_table = np.zeros((batch_size, sentence_length * sentence_length * 2, tag_num))
     incomplete_table = np.zeros((batch_size, sentence_length * sentence_length * 2, tag_num, tag_num))
+    #complete_table.fill(-np.inf)
+    #incomplete_table.fill(-np.inf)
     # backtrack table
     complete_backtrack = -np.ones((batch_size, sentence_length * sentence_length * 2, tag_num), dtype=int)
     incomplete_backtrack = -np.ones((batch_size, sentence_length * sentence_length * 2, tag_num, tag_num), dtype=int)
     # span index table, to avoid redundant iterations
-    span_2_id, id_2_span, ijss, ikcs, ikis, kjcs, kjis, basic_span = utils.constituent_index(sentence_length)
+    span_2_id, id_2_span, ijss, ikcs, ikis, kjcs, kjis, basic_span = utils.constituent_index(sentence_length,False)
     # initial basic complete spans
     for ii in basic_span:
         complete_table[:, ii, :] = 0.0

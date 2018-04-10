@@ -51,16 +51,20 @@ if __name__ == '__main__':
     parser.add_option("--do_eval", action="store_true", dest="do_eval", default=False)
     parser.add_option("--log", dest="log", help="log file", metavar="FILE", default="output/log")
     parser.add_option("--ddim", dest="ddim", type="int", default=5)
+    parser.add_option("--sub_batch", dest="sub_batch_size", default=100)
 
     parser.add_option("--predict", action="store_true", dest="predictFlag", default=False)
+    parser.add_option("--gold_init", action="store_true", dest="gold_init", default=False)
 
-    parser.add_option("--e_pass", type="int", dest="e_pass", default=2)
-    parser.add_option("--d_pass", type="int", dest="d_pass", default=2)
+    parser.add_option("--e_pass", type="int", dest="e_pass", default=4)
+    parser.add_option("--d_pass", type="int", dest="d_pass", default=4)
 
     parser.add_option("--paramdec", dest="paramdec", help="Decoder parameters file", metavar="FILE",
                       default="paramdec.pickle")
 
     parser.add_option("--gpu", type="int", dest="gpu", default=-1, help='gpu id, set to -1 if use cpu mode')
+
+    parser.add_option("--seed",type="int",dest="seed",default=0)
 
     (options, args) = parser.parse_args()
 
@@ -84,7 +88,7 @@ if __name__ == '__main__':
             s_data_list.append(s_pos)
             s_data_list.append([eval_sen_idx])
             if options.use_trigram:
-                s_trigram = utils.construct_trigram(s_pos,pos)
+                s_trigram = utils.construct_trigram(s_pos, pos)
                 s_data_list.append(s_trigram)
             eval_data_list.append(s_data_list)
             eval_sen_idx += 1
@@ -100,7 +104,7 @@ if __name__ == '__main__':
                 batch_trigram_v = None
             eval_batch_words_v = utils.list2Variable(eval_batch_words, options.gpu)
             eval_batch_pos_v = utils.list2Variable(eval_batch_pos, options.gpu)
-            dep_model(eval_batch_words_v, eval_batch_pos_v, None, eval_batch_sen,batch_trigram_v)
+            dep_model(eval_batch_words_v, eval_batch_pos_v, None, eval_batch_sen, batch_trigram_v)
         test_res = dep_model.parse_results
         utils.eval(test_res, eval_sentences, devpath, options.log + '_' + str(options.sample_idx), epoch)
         print "===================================="
@@ -113,6 +117,7 @@ if __name__ == '__main__':
     print 'Parameters saved'
     data_list = list()
     sen_idx = 0
+    #torch.manual_seed(options.seed)
     if options.prior_weight > 0:
         prior_dict = {}
         prior_set = param.set_prior(options.rule_type)
@@ -125,7 +130,7 @@ if __name__ == '__main__':
         s_data_list.append(s_pos)
         s_data_list.append([sen_idx])
         if options.use_trigram:
-            s_trigram = utils.construct_trigram(s_pos,pos)
+            s_trigram = utils.construct_trigram(s_pos, pos)
             s_data_list.append(s_trigram)
         data_list.append(s_data_list)
         if options.prior_weight > 0:
@@ -135,8 +140,8 @@ if __name__ == '__main__':
             s_gold = list(map(lambda e: e.parent_id, s.entries))
             gold_dict[sen_idx] = s_gold
         sen_idx += 1
-    # utils.find_trans(sentences,pos,options.tag_num)
-    batch_data = utils.construct_batch_data(data_list, options.batchsize)
+    # batch_data = utils.construct_batch_data(data_list, options.batchsize)
+    batch_data = utils.construct_update_batch_data(data_list, options.batchsize)
     print 'Batch data constructed'
 
     dependencyTaggingPl_model = dt_pl_model.dt_paralell_model(w2i, pos, options)
@@ -145,7 +150,11 @@ if __name__ == '__main__':
     if options.use_gold:
         dependencyTaggingPl_model.gold_dict = gold_dict
     print 'Model constructed'
-    dependencyTaggingPl_model.init_decoder_param(sentences)
+    if options.gold_init:
+        dependencyTaggingPl_model.golden_init_decoder(sentences)
+    else:
+        dependencyTaggingPl_model.init_decoder_param(sentences)
+
     print 'Decoder parameters initialized'
     if options.gpu >= 0 and torch.cuda.is_available():
         torch.cuda.set_device(options.gpu)
@@ -157,7 +166,8 @@ if __name__ == '__main__':
         dependencyTaggingPl_model.train()
         if epoch == 0 and options.use_initial:
             dependencyTaggingPl_model.initial_Flag = True
-        for n in range(options.e_pass):
+        for n in range(options.e_pass+1 if epoch == 0 else options.e_pass):
+        #for n in range(options.e_pass):
             iter_loss = 0.0
             training_likelihood = 0.0
             print 'Encoder training iteration ', n
@@ -166,17 +176,38 @@ if __name__ == '__main__':
             for batch_id, one_batch in tqdm(
                     enumerate(batch_data), mininterval=2,
                     desc=' -Tot it %d (epoch %d)' % (tot_batch, 0), leave=False, file=sys.stdout):
-                batch_words, batch_pos, batch_sen = [s[0] for s in one_batch], [s[1] for s in one_batch], \
-                                                    [s[2][0] for s in one_batch]
-                batch_words_v = utils.list2Variable(batch_words, options.gpu)
-                batch_pos_v = utils.list2Variable(batch_pos, options.gpu)
-                if options.use_trigram:
-                    batch_trigram = [s[3] for s in one_batch]
-                    batch_trigram_v = utils.list2Variable(batch_trigram,options.gpu)
-                else:
-                    batch_trigram_v = None
-                batch_loss, batch_likelihood = dependencyTaggingPl_model(batch_words_v, batch_pos_v, None,
-                                                                         batch_sen, batch_trigram_v)
+                # batch_words, batch_pos, batch_sen = [s[0] for s in one_batch], [s[1] for s in one_batch], \
+                #                                     [s[2][0] for s in one_batch]
+                # batch_words_v = utils.list2Variable(batch_words, options.gpu)
+                # batch_pos_v = utils.list2Variable(batch_pos, options.gpu)
+                # if options.use_trigram:
+                #     batch_trigram = [s[3] for s in one_batch]
+                #     batch_trigram_v = utils.list2Variable(batch_trigram,options.gpu)
+                # else:
+                #     batch_trigram_v = None
+                # batch_loss, batch_likelihood = dependencyTaggingPl_model(batch_words_v, batch_pos_v, None,
+                #                                                          batch_sen, batch_trigram_v)
+                batch_loss_list = []
+                batch_likelihood = 0.0
+                sub_batch_data = utils.construct_batch_data(one_batch, options.sub_batch_size)
+                for one_sub_batch in sub_batch_data:
+                    sub_batch_words, sub_batch_pos, sub_batch_sen = [s[0] for s in one_sub_batch], \
+                                                                    [s[1] for s in one_sub_batch], \
+                                                                    [s[2][0] for s in one_sub_batch]
+                    sub_batch_words_v = utils.list2Variable(sub_batch_words, options.gpu)
+                    sub_batch_pos_v = utils.list2Variable(sub_batch_pos, options.gpu)
+                    if options.use_trigram:
+                        sub_batch_trigram = [s[3] for s in one_sub_batch]
+                        sub_batch_trigram_v = utils.list2Variable(sub_batch_trigram, options.gpu)
+                    else:
+                        sub_batch_trigram_v = None
+                    sub_batch_loss, sub_batch_likelihood = dependencyTaggingPl_model(sub_batch_words_v, sub_batch_pos_v,
+                                                                                     None, sub_batch_sen,
+                                                                                     sub_batch_trigram_v)
+                    batch_loss_list.append(sub_batch_loss)
+                    batch_likelihood += sub_batch_likelihood
+                batch_loss = torch.cat(batch_loss_list)
+                batch_loss = torch.sum(batch_loss)
                 training_likelihood += batch_likelihood
                 batch_loss.backward()
                 dependencyTaggingPl_model.trainer.step()
@@ -192,6 +223,7 @@ if __name__ == '__main__':
         if options.do_eval:
             do_eval(dependencyTaggingPl_model, w2i, pos, options)
         print 'To train decoder'
+        dependencyTaggingPl_model.train()
         if options.dir_flag:
             dir_dim = 2
         else:
@@ -207,10 +239,18 @@ if __name__ == '__main__':
                 lex_counter = None
             for batch_id in range(len(batch_data)):
                 one_batch = batch_data[batch_id]
-                batch_words, batch_pos, batch_sen = [s[0] for s in one_batch], [s[1] for s in one_batch], \
-                                                    [s[2][0] for s in one_batch]
-                batch_likelihood = dependencyTaggingPl_model.hard_em_e(batch_pos, batch_words, batch_sen,
-                                                                       recons_counter, lex_counter)
+                # batch_words, batch_pos, batch_sen = [s[0] for s in one_batch], [s[1] for s in one_batch], \
+                #                                     [s[2][0] for s in one_batch]
+                batch_likelihood = 0.0
+                sub_batch_data = utils.construct_batch_data(one_batch, options.sub_batch_size)
+                for one_sub_batch in sub_batch_data:
+                    sub_batch_words, sub_batch_pos, sub_batch_sen = [s[0] for s in one_sub_batch], \
+                                                                    [s[1] for s in one_sub_batch], \
+                                                                    [s[2][0] for s in one_sub_batch]
+                    sub_batch_likelihood = dependencyTaggingPl_model.hard_em_e(sub_batch_pos, sub_batch_words,
+                                                                           sub_batch_sen,
+                                                                           recons_counter, lex_counter)
+                    batch_likelihood += sub_batch_likelihood
                 training_likelihood += batch_likelihood
             print 'Likelihood for this iteration', training_likelihood
             dependencyTaggingPl_model.hard_em_m(batch_data, recons_counter, lex_counter)

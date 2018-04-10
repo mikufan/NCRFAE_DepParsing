@@ -41,7 +41,7 @@ class eisner_layer(autograd.Function):
         pseudo_count.fill_(LOGZERO)
         if torch.cuda.is_available():
             pseudo_count = pseudo_count.cuda()
-        span_2_id, id_2_span, ijss, ikcs, ikis, kjcs, kjis, basic_span = utils.constituent_index(self.sentence_length)
+        span_2_id, id_2_span, ijss, ikcs, ikis, kjcs, kjis, basic_span = utils.constituent_index(self.sentence_length,False)
 
         for l in range(self.sentence_length):
             for r in range(self.sentence_length):
@@ -67,7 +67,8 @@ class eisner_layer(autograd.Function):
         if torch.cuda.is_available():
             inside_complete_table = inside_complete_table.cuda()
             inside_incomplete_table = inside_incomplete_table.cuda()
-        span_2_id, id_2_span, ijss, ikcs, ikis, kjcs, kjis, basic_span = utils.constituent_index(self.sentence_length)
+        span_2_id, id_2_span, ijss, ikcs, ikis, kjcs, kjis, basic_span = utils.constituent_index(self.sentence_length,
+                                                                                                 False)
 
         inside_complete_table.fill_(LOGZERO)
         inside_incomplete_table.fill_(LOGZERO)
@@ -128,7 +129,7 @@ class eisner_layer(autograd.Function):
         if torch.cuda.is_available():
             outside_complete_table = outside_complete_table.cuda()
             outside_incomplete_table = outside_incomplete_table.cuda()
-        span_2_id, id_2_span, ijss, ikcs, ikis, kjcs, kjis, basic_span = utils.constituent_index(self.sentence_length)
+        span_2_id, id_2_span, ijss, ikcs, ikis, kjcs, kjis, basic_span = utils.constituent_index(self.sentence_length,False)
         outside_complete_table.fill_(LOGZERO)
         outside_incomplete_table.fill_(LOGZERO)
 

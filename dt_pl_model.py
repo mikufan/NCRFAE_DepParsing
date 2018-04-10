@@ -34,8 +34,8 @@ class dt_paralell_model(nn.Module):
         self.n_layer = options.n_layer
         self.external_embedding = options.external_embedding
         self.dist_dim = options.dist_dim
-        self.vocab = {word: ind for word, ind in w2i.iteritems()}
-        self.pos = {word: ind for ind, word in enumerate(pos)}
+        self.vocab = w2i
+        self.pos = pos
         self.gpu = options.gpu
         self.tdim = options.tag_dim
         self.ddim = options.ddim
@@ -70,7 +70,7 @@ class dt_paralell_model(nn.Module):
         # Trigram feature layers
         self.trifeat2trans = nn.Linear(6 * self.pdim + self.ddim, self.trans_hidden)
         self.trifeat2trans_back = nn.Linear(6 * self.pdim + self.ddim, self.trans_hidden)
-        self.tri_out_layer = nn.Linear(self.trans_hidden,1)
+        self.tri_out_layer = nn.Linear(self.trans_hidden, 1)
 
         if self.use_context:
             self.context2trans = nn.Linear(4 * self.hidden_dim, self.hidden_dim)
@@ -106,7 +106,7 @@ class dt_paralell_model(nn.Module):
             self.wlookup.weight.data.copy_(torch.from_numpy(augmented))
         else:
             self.wlookup = nn.Embedding(len(self.vocab), self.embedding_dim)
-            xavier_uniform(self.wlookup.weight.data, 0.01)
+            xavier_uniform(self.wlookup.weight.data, 0.1)
 
     def evaluate(self, batch_pos, batch_words, batch_sen, crf_scores):
         batch_size, sentence_length = batch_pos.data.shape
@@ -136,7 +136,8 @@ class dt_paralell_model(nn.Module):
                     else:
                         dir = 0
                     if not self.recons_param is None:
-                        scores[sentence_id, i, j, :, :] += np.log(self.recons_param[h_pos_id, :, m_pos_id, dist, dir])
+                        scores[sentence_id, i, j, :, :] += np.log(
+                            self.recons_param[h_pos_id, :, m_pos_id, dist, dir]).reshape(self.tag_num, 1)
                     if self.use_lex:
                         scores[sentence_id, i, j, :, :] += np.log(self.lex_param[m_pos_id, :, word_id]
                                                                   .reshape(1, self.tag_num))
@@ -245,14 +246,17 @@ class dt_paralell_model(nn.Module):
         unary_potential = unary_potential.unsqueeze(4)
         unary_potential = unary_potential.repeat(1, 1, 1, 1, self.tag_num)
         unary_potential = F.relu(unary_potential)
-        crf_scores = unary_potential + trans_matrix
-        #crf_scores = unary_potential
+        if not self.use_trigram:
+            crf_scores = unary_potential + trans_matrix
+        else:
+            crf_scores = unary_potential
         if self.use_trigram:
             crf_scores = crf_scores + trigram_trans
+            #crf_scores = trigram_trans
         if self.use_context:
             context_var = self.compute_context(hidden_out, trans_masks, trans_back_masks)
             crf_scores = crf_scores + context_var
-            # crf_scores = context_var
+            #crf_scores = context_var
         crf_scores = crf_scores.double()
         if torch.cuda.is_available():
             crf_scores = crf_scores.cuda()
@@ -313,10 +317,10 @@ class dt_paralell_model(nn.Module):
 
         trans_matrix = trans_matrix_forward + trans_matrix_back
         # trans_matrix = trans_matrix_forward
-        #trans_matrix = F.sigmoid(trans_matrix)
+        # trans_matrix = F.sigmoid(trans_matrix)
         return trans_matrix, dist_emb
 
-    def compute_trigram_trans(self, batch_trigram, dist_emb,trans_masks,trans_back_masks):
+    def compute_trigram_trans(self, batch_trigram, dist_emb, trans_masks, trans_back_masks):
         trigram_trans = []
         batch_size, sentence_length, _ = batch_trigram.data.shape
         batch_trigram = batch_trigram.contiguous().view(batch_size * sentence_length, 3)
@@ -335,13 +339,13 @@ class dt_paralell_model(nn.Module):
         trigram_trans_forward = self.tri_out_layer(trigram_trans_forward)
         trigram_trans_back = self.tri_out_layer(trigram_trans_back)
         trigram_trans_forward = trigram_trans_forward.contiguous().view(batch_size, sentence_length, sentence_length,
-                                                                      self.tag_num, self.tag_num)
-        trigram_trans_back = trigram_trans_back.contiguous().view(batch_size, sentence_length, sentence_length,
                                                                         self.tag_num, self.tag_num)
-        trigram_trans_forward = trigram_trans_forward.masked_fill(trans_masks,0)
-        trigram_trans_back = trigram_trans_back.masked_fill(trans_back_masks,0)
+        trigram_trans_back = trigram_trans_back.contiguous().view(batch_size, sentence_length, sentence_length,
+                                                                  self.tag_num, self.tag_num)
+        trigram_trans_forward = trigram_trans_forward.masked_fill(trans_masks, 0)
+        trigram_trans_back = trigram_trans_back.masked_fill(trans_back_masks, 0)
         trigram_trans_matrix = trigram_trans_forward + trigram_trans_back
-        trigram_trans_matrix = F.relu(trigram_trans_matrix)
+        # trigram_trans_matrix = F.relu(trigram_trans_matrix)
         return trigram_trans_matrix
 
     def get_tree_score(self, crf_score, scores, best_parse, partition, batch_sen):
@@ -383,7 +387,7 @@ class dt_paralell_model(nn.Module):
         # lstm_feats = self.hidden2tags(temp)
         mask = self.construct_mask(batch_size, sentence_length)
         if self.use_trigram:
-            trigram_trans = self.compute_trigram_trans(batch_trigram, dist_emb,trans_masks, trans_back_masks)
+            trigram_trans = self.compute_trigram_trans(batch_trigram, dist_emb, trans_masks, trans_back_masks)
         else:
             trigram_trans = None
         crf_scores = self.compute_neural_crf_scores(lstm_feats, trans_matrix, hidden_out, trigram_trans, trans_masks,
@@ -392,7 +396,7 @@ class dt_paralell_model(nn.Module):
         if torch.cuda.is_available():
             mask = mask.cuda()
         crf_scores = crf_scores.masked_fill(mask, -np.inf)
-        if not self.use_gold:
+        if not self.use_gold or (self.use_gold and not self.training):
             scores = self.evaluate(batch_pos, batch_words, batch_sen, crf_scores)
             best_parse = eisner_parser.batch_parse(scores)
         else:
@@ -541,3 +545,43 @@ class dt_paralell_model(nn.Module):
             lex_sum = np.sum(self.lex_param, axis=2) + np.sum(lex_smoothing, axis=2)
             lex_sum = lex_sum.reshape(pos_num, self.tag_num, 1)
             self.lex_param = (self.lex_param + lex_smoothing) / lex_sum
+
+    def golden_init_decoder(self, data):
+        if self.dir_flag:
+            dir_dim = 2
+        else:
+            dir_dim = 1
+        smoothing = 1e-8
+        pos_num = len(self.pos.keys())
+        self.recons_param = np.zeros(
+            (pos_num, self.tag_num, pos_num, self.dist_dim, dir_dim), dtype=np.float64)
+        max_dist = self.dist_dim - 1
+        for sentence in data:
+            for i, m_entry in enumerate(sentence.entries):
+                h = m_entry.parent_id
+                h = int(h)
+                if h == -1:
+                    continue
+                dist = abs(i - h) - 1
+                if dist > max_dist:
+                    dist = max_dist
+                if self.dir_flag:
+                    if i < h:
+                        dir = 1
+                    else:
+                        dir = 0
+                else:
+                    dir = 0
+                h_entry = sentence.entries[h]
+                h_pos = h_entry.pos
+                m_pos = m_entry.pos
+                h_pos_id = self.pos.get(h_pos)
+                m_pos_id = self.pos.get(m_pos)
+                self.recons_param[h_pos_id, :, m_pos_id, dist, dir] += 1
+        smoothing_child = np.empty((pos_num, self.dist_dim, dir_dim))
+        smoothing_child.fill(smoothing)
+        smoothing_child_sum = np.sum(smoothing_child, axis=0)
+        child_sum = np.sum(self.recons_param, axis=2).reshape(pos_num, self.tag_num, 1, self.dist_dim, dir_dim)
+        for i in range(pos_num):
+            self.recons_param[i, :, :, :, :] = (self.recons_param[i, :, :, :, :] + smoothing_child) / (
+                child_sum[i] + smoothing_child_sum)

@@ -134,9 +134,7 @@ def update_scores(pos_sentence, words_sentence, sidx, scores, crf_scores, recons
                 recons_param[h_pos_idx, :, m_pos_idx, dist, dir]).reshape(tag_num, 1)
             if use_lex:
                 scores[i, j, :, :] += np.log(lex_param[m_pos_idx, :, word_idx].reshape(1, tag_num))
-    # if prior_weight > 0:
-    #     prior_score = prior_dict[sidx]
-    #     scores += prior_score
+
 
     return scores
 
@@ -200,16 +198,15 @@ def normalize(recons_counter, lex_counter, recons_param, lex_param, root_idx, us
     child_sum = np.sum(recons_counter, axis=2).reshape(pos_num, tag_num, 1, dist_dim, dir_dim)
     smoothing_child = np.empty((pos_num, dist_dim, dir_dim))
     smoothing_child.fill(smoothing)
+    smoothing_child[root_idx, :, :] = 0
     smoothing_child_sum = np.sum(smoothing_child, axis=0)
     for i in range(pos_num):
         if i == root_idx:
             recons_param[i, 0, :, :, :] = (recons_counter[i, 0, :, :, :] + smoothing_child) / (
                 child_sum[i, 0] + smoothing_child_sum)
-            #recons_param[i,0,:,:,:] = recons_counter[i,0,:,:,:]/child_sum[i,0]
         else:
             recons_param[i, :, :, :, :] = (recons_counter[i, :, :, :, :] + smoothing_child) / (
                 child_sum[i] + smoothing_child_sum)
-            #recons_param[i, :, :, :, :] = recons_counter[i, :, :, :, :] / child_sum[i]
     if use_lex:
         smoothing_word = np.empty(word_num)
         smoothing_word.fill(smoothing)

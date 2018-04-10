@@ -17,7 +17,7 @@ if __name__ == '__main__':
     parser.add_option("--dev", dest="dev", help="dev file", metavar="FILE", default="data/wsj10_d")
 
     parser.add_option("--extrn", dest="external_embedding", help="External embeddings", metavar="FILE")
-    parser.add_option("--batch", type="int", dest="batchsize", default=200)
+    parser.add_option("--batch", type="int", dest="batchsize", default=100)
 
     parser.add_option("--params", dest="params", help="Parameters file", metavar="FILE", default="params.pickle")
     parser.add_option("--model", dest="model", help="Load/Save model file", metavar="FILE",
@@ -49,6 +49,9 @@ if __name__ == '__main__':
     parser.add_option("--do_eval", action="store_true", dest="do_eval", default=False)
     parser.add_option("--log", dest="log", help="log file", metavar="FILE", default="output/log")
     parser.add_option("--ddim", dest="ddim", type="int", default=5)
+    parser.add_option("--lambda", dest="lam", type="float", default=0.0)
+    parser.add_option("--gold_init", action="store_true", dest="gold_init", default=False)
+    parser.add_option("--sub_batch", dest="sub_batch_size", default=100)
 
     parser.add_option("--predict", action="store_true", dest="predictFlag", default=False)
 
@@ -70,6 +73,8 @@ if __name__ == '__main__':
     def do_eval(dep_model, w2i, pos, feats, options):
         print "===================================="
         print 'Do evaluation on development set'
+        # unknown_idx = feats["<UNKNOWN-FEATS>"]
+        # dep_model.feat_param.weight.data[unknown_idx] = 0
         eval_sentences = utils.read_data(options.dev, True)
         dep_model.eval()
         eval_sen_idx = 0
@@ -103,7 +108,7 @@ if __name__ == '__main__':
 
     w2i, pos, feats, sentences = utils.read_sparse_data(options.train, False)
     print 'Data read'
-    print 'Feature number '+str(len(feats))
+    print 'Feature number ' + str(len(feats))
     with open(os.path.join(options.output, options.params + '_' + str(options.sample_idx)), 'w') as paramsfp:
         pickle.dump((w2i, pos, options), paramsfp)
     print 'Parameters saved'
@@ -130,7 +135,8 @@ if __name__ == '__main__':
             s_gold = list(map(lambda e: e.parent_id, s.entries))
             gold_dict[sen_idx] = s_gold
         sen_idx += 1
-    batch_data = utils.construct_batch_data(data_list, options.batchsize)
+    # batch_data = utils.construct_batch_data(data_list, options.batchsize)
+    batch_data = utils.construct_update_batch_data(data_list, options.batchsize)
     print 'Batch data constructed'
 
     dependency_tagging_model = dt_sparse_model.sparse_model(w2i, pos, feats, options)
@@ -139,7 +145,10 @@ if __name__ == '__main__':
     if options.use_gold:
         dependency_tagging_model.gold_dict = gold_dict
     print 'Model constructed'
-    dependency_tagging_model.init_decoder_param(sentences)
+    if options.gold_init:
+        dependency_tagging_model.golden_init_decoder(sentences)
+    else:
+        dependency_tagging_model.init_decoder_param(sentences)
     print 'Decoder parameters initialized'
     if options.gpu >= 0 and torch.cuda.is_available():
         torch.cuda.set_device(options.gpu)
@@ -156,18 +165,37 @@ if __name__ == '__main__':
             training_likelihood = 0.0
             print 'Encoder training iteration ', n
             tot_batch = len(batch_data)
-            # random.shuffle(batch_data)
+            random.shuffle(batch_data)
             for batch_id, one_batch in tqdm(
                     enumerate(batch_data), mininterval=2,
                     desc=' -Tot it %d (epoch %d)' % (tot_batch, 0), leave=False, file=sys.stdout):
-                batch_words, batch_pos, batch_sen, batch_feats = [s[0] for s in one_batch], [s[1] for s in one_batch], \
-                                                                 [s[2][0] for s in one_batch], [s[3] for s in one_batch]
-                batch_words_v = utils.list2Variable(batch_words, options.gpu)
-                batch_pos_v = utils.list2Variable(batch_pos, options.gpu)
-                batch_feats_v = utils.list2Variable(batch_feats, options.gpu)
-                batch_loss, batch_likelihood = dependency_tagging_model(batch_words_v, batch_pos_v, None,
-                                                                        batch_sen, batch_feats_v)
+                # batch_words, batch_pos, batch_sen, batch_feats = [s[0] for s in one_batch], [s[1] for s in one_batch], \
+                #                                                  [s[2][0] for s in one_batch], [s[3] for s in one_batch]
+                # batch_words_v = utils.list2Variable(batch_words, options.gpu)
+                # batch_pos_v = utils.list2Variable(batch_pos, options.gpu)
+                # batch_feats_v = utils.list2Variable(batch_feats, options.gpu)
+                batch_loss_list = []
+                batch_likelihood = 0.0
+                sub_batch_data = utils.construct_batch_data(one_batch, options.sub_batch_size)
+                for one_sub_batch in sub_batch_data:
+                    sub_batch_words, sub_batch_pos, sub_batch_sen, sub_batch_feats = [s[0] for s in one_sub_batch], \
+                                                                                     [s[1] for s in one_sub_batch], \
+                                                                                     [s[2][0] for s in one_sub_batch], \
+                                                                                     [s[3] for s in one_sub_batch]
+                    sub_batch_words_v = utils.list2Variable(sub_batch_words, options.gpu)
+                    sub_batch_pos_v = utils.list2Variable(sub_batch_pos, options.gpu)
+                    sub_batch_feats_v = utils.list2Variable(sub_batch_feats, options.gpu)
+                    sub_batch_loss, sub_batch_likelihood, l1 = dependency_tagging_model(sub_batch_words_v,
+                                                                                        sub_batch_pos_v, None,
+                                                                                        sub_batch_sen,
+                                                                                        sub_batch_feats_v)
+                    batch_loss_list.append(sub_batch_loss)
+                    batch_likelihood += sub_batch_likelihood
+                batch_loss = torch.cat(batch_loss_list)
+                batch_loss = torch.sum(batch_loss)
                 training_likelihood += batch_likelihood
+                l1 = l1.double()
+                # batch_loss += options.lam*l1
                 batch_loss.backward()
                 dependency_tagging_model.trainer.step()
                 dependency_tagging_model.trainer.zero_grad()
@@ -184,6 +212,7 @@ if __name__ == '__main__':
             dir_dim = 2
         else:
             dir_dim = 1
+        dependency_tagging_model.train()
         for n in range(options.d_pass):
             print 'Decoder training iteration ', n
             training_likelihood = 0.0
@@ -195,10 +224,18 @@ if __name__ == '__main__':
                 lex_counter = None
             for batch_id in range(len(batch_data)):
                 one_batch = batch_data[batch_id]
-                batch_words, batch_pos, batch_sen = [s[0] for s in one_batch], [s[1] for s in one_batch], \
-                                                    [s[2][0] for s in one_batch]
-                batch_likelihood = dependency_tagging_model.hard_em_e(batch_pos, batch_words, batch_sen,
-                                                                      recons_counter, lex_counter)
+                batch_likelihood = 0.0
+                sub_batch_data = utils.construct_batch_data(one_batch, options.sub_batch_size)
+                # batch_words, batch_pos, batch_sen = [s[0] for s in one_batch], [s[1] for s in one_batch], \
+                #                                     [s[2][0] for s in one_batch]
+                for one_sub_batch in sub_batch_data:
+                    sub_batch_words, sub_batch_pos, sub_batch_sen = [s[0] for s in one_sub_batch], \
+                                                                    [s[1] for s in one_sub_batch], \
+                                                                    [s[2][0] for s in one_sub_batch]
+                    sub_batch_likelihood = dependency_tagging_model.hard_em_e(sub_batch_pos, sub_batch_words,
+                                                                              sub_batch_sen,
+                                                                              recons_counter, lex_counter)
+                    batch_likelihood += sub_batch_likelihood
                 training_likelihood += batch_likelihood
             print 'Likelihood for this iteration', training_likelihood
             dependency_tagging_model.hard_em_m(batch_data, recons_counter, lex_counter)
@@ -209,5 +246,5 @@ if __name__ == '__main__':
             os.path.join(options.output,
                          os.path.basename(options.model) + str(epoch + 1) + '_' + str(options.sample_idx)))
         if options.do_eval:
-            do_eval(dependency_tagging_model, w2i, pos,feats, options)
+            do_eval(dependency_tagging_model, w2i, pos, feats, options)
     print 'Training finished'

@@ -6,6 +6,7 @@ import torch
 import numpy as np
 import torch.nn as nn
 from torch.nn.init import *
+import itertools
 
 
 class ConllEntry:
@@ -168,8 +169,6 @@ def update_features(featureSet, data_sentence):
     entries = data_sentence.entries
     for i in range(data_sentence.size):
         for j in range(data_sentence.size):
-            if j == 0:
-                continue
             if i == j:
                 continue
             if i > j:
@@ -180,47 +179,38 @@ def update_features(featureSet, data_sentence):
                 dist = 6
             else:
                 dist = abs(i - j)
-            head = entries[i].pos
-            child = entries[j].pos
-            if i == 0:
-                head_left = "<START>"
-                head_right = "<START>"
-            elif i == 1:
-                if data_sentence.size == 2:
-                    head_left = "<START>"
-                    head_right = "<END>"
-                else:
-                    head_left = "<START>"
-                    head_right = entries[i + 1].pos
-            elif i == data_sentence.size - 1:
-                head_left = entries[i - 1].pos
-                head_right = "<END>"
-            else:
-                head_left = entries[i - 1].pos
-                head_right = entries[i + 1].pos
-            if j == 1:
-                if data_sentence.size == 2:
-                    child_left = "<START>"
-                    child_right = "<END>"
-                else:
-                    child_left = "<START>"
-                    child_right = entries[j + 1].pos
-            elif j == data_sentence.size - 1:
-                child_left = entries[j - 1].pos
-                child_right = "<END>"
-            else:
-                child_left = entries[j - 1].pos
-                child_right = entries[j + 1].pos
 
-            h_unary = (head, dir, dist)
-            m_unary = (child, dir, dist)
-            binary = (head, child, dir, dist)
-            h_left_trigram = (head_left, head, child, dir, dist)
-            h_right_trigram = (head, head_right, child, dir, dist)
-            m_left_trigram = (head, child_left, child, dir, dist)
-            m_right_trigram = (head, child, child_right, dir, dist)
-            featureSet.add(h_unary)
-            featureSet.add(m_unary)
+            if i > j:
+                small = j
+                large = i
+            else:
+                small = i
+                large = j
+            if small > 0:
+                p_left = entries[small - 1].pos
+            else:
+                p_left = "STR"
+            if large < len(entries) - 1:
+                p_right = entries[large + 1].pos
+            else:
+                p_right = "END"
+            if small < large - 1:
+                p_left_right = entries[small + 1].pos
+            else:
+                p_left_right = "MID"
+            if large > small + 1:
+                p_right_left = entries[large - 1].pos
+            else:
+                p_right_left = "MID"
+            left_unary = (entries[small].pos, dir, dist)
+            right_unary = (entries[large].pos, dir, dist)
+            binary = (entries[small].pos, entries[large].pos, dir, dist)
+            h_left_trigram = (entries[small].pos, p_left, entries[large].pos, dir, dist)
+            h_right_trigram = (entries[small].pos, p_left_right, entries[large].pos, dir, dist)
+            m_left_trigram = (entries[small].pos, entries[large].pos, p_right_left, dir, dist)
+            m_right_trigram = (entries[small].pos, entries[large].pos, p_right, dir, dist)
+            featureSet.add(left_unary)
+            featureSet.add(right_unary)
             featureSet.add(binary)
             featureSet.add(h_left_trigram)
             featureSet.add(h_right_trigram)
@@ -335,17 +325,17 @@ def eval(predicted, gold, test_path, log_path, epoch):
     f_w.close()
     if epoch == 0:
         log = open(log_path, 'w')
-        log.write("UAS for epoch " + str(epoch))
-        log.write('\n')
-        log.write('\n')
+        # log.write("UAS for epoch " + str(epoch))
+        # log.write('\n')
+        # log.write('\n')
         log.write(str(accuracy))
         log.write('\n')
         log.write('\n')
     else:
         log = open(log_path, 'a')
-        log.write("UAS for epoch " + str(epoch))
-        log.write('\n')
-        log.write('\n')
+        # log.write("UAS for epoch " + str(epoch))
+        # log.write('\n')
+        # log.write('\n')
         log.write(str(accuracy))
         log.write('\n')
         log.write('\n')
@@ -394,6 +384,19 @@ def construct_batch_data(data_list, batch_size):
     for group in grouped:
         sub_batch_data = get_batch_data(group, batch_size)
         batch_data.extend(sub_batch_data)
+    return batch_data
+
+def construct_update_batch_data(data_list,batch_size):
+    random.shuffle(data_list)
+    batch_data = []
+    len_datas = len(data_list)
+    num_batch = len_datas // batch_size
+    if not len_datas % batch_size == 0:
+        num_batch += 1
+    for i in range(num_batch):
+        start_idx = i * batch_size
+        end_idx = min(len_datas, (i + 1) * batch_size)
+        batch_data.append(data_list[start_idx:end_idx])
     return batch_data
 
 
@@ -473,7 +476,7 @@ def asum(a, axis=None, keepdim=False):
 
 
 @memoize
-def constituent_index(sentence_length):
+def constituent_index(sentence_length, multiroot):
     counter_id = 0
     basic_span = []
     id_2_span = {}
@@ -518,7 +521,7 @@ def constituent_index(sentence_length):
                             kjcs[ids].append(idrc)
 
                     else:
-                        if k < j and not (i==0 and k!=0):
+                        if k < j and ((not (i == 0 and k != 0) and not multiroot) or multiroot):
                             # two complete spans to form an incomplete span
                             idli = span_2_id[(i, k, dir)]
                             ikis[ids].append(idli)
@@ -576,7 +579,8 @@ def construct_prior(prior_set, sentence, pos, tag_num, prior_weight):
             m_pos = sentence.entries[j].pos
             tag_tuple = (h_pos, m_pos)
             if tag_tuple in prior_set:
-                s_prior[i, j, :, :] = prior_weight
+                s_prior[i, j, :, :] = float(prior_weight) / sentence_length
+                #s_prior[i, j, :, :] = float(prior_weight)
     return s_prior
 
 
@@ -617,7 +621,7 @@ def compute_trans(feat_type, batch_size, sentence_length, tag_num, feat_emb):
     if feat_type == 'trans':
         feat_emb = feat_emb.unsqueeze(3)
         feat_emb = feat_emb.unsqueeze(4)
-        feat_emb = feat_emb.repeat(1,1,1,tag_num,tag_num,1)
+        feat_emb = feat_emb.repeat(1, 1, 1, tag_num, tag_num, 1)
         return feat_emb
 
 
@@ -635,7 +639,7 @@ def init_weight(layer):
                 constant(p, 0)
 
 
-def construct_trigram(s_pos,pos):
+def construct_trigram(s_pos, pos):
     trigram_list = list()
     for i in range(len(s_pos)):
         if i == 0:
@@ -662,11 +666,11 @@ def construct_feats(feats, s):
         head_feature = []
         for j in range(len(entries)):
             single_feature = []
-            if j == 0:
-                for k in range(7):
-                    single_feature.append(unknown_idx)
-                head_feature.append(single_feature)
-                continue
+            # if j == 0:
+            #     for k in range(7):
+            #         single_feature.append(unknown_idx)
+            #     head_feature.append(single_feature)
+            #     continue
             if i == j:
                 for k in range(7):
                     single_feature.append(unknown_idx)
@@ -680,47 +684,37 @@ def construct_feats(feats, s):
                 dist = 6
             else:
                 dist = abs(i - j)
-            head = entries[i].pos
-            child = entries[j].pos
-            if i == 0:
-                head_left = "<START>"
-                head_right = "<START>"
-            elif i == 1:
-                if len(entries) == 2:
-                    head_left = "<START>"
-                    head_right = "<END>"
-                else:
-                    head_left = "<START>"
-                    head_right = entries[i + 1].pos
-            elif i == len(entries) - 1:
-                head_left = entries[i - 1].pos
-                head_right = "<END>"
+            if i > j:
+                small = j
+                large = i
             else:
-                head_left = entries[i - 1].pos
-                head_right = entries[i + 1].pos
-            if j == 1:
-                if len(entries) == 2:
-                    child_left = "<START>"
-                    child_right = "<END>"
-                else:
-                    child_left = "<START>"
-                    child_right = entries[j + 1].pos
-            elif j == len(entries) - 1:
-                child_left = entries[j - 1].pos
-                child_right = "<END>"
+                small = i
+                large = j
+            if small > 0:
+                p_left = entries[small - 1].pos
             else:
-                child_left = entries[j - 1].pos
-                child_right = entries[j + 1].pos
-
-            h_unary = (head, dir, dist)
-            m_unary = (child, dir, dist)
-            binary = (head, child, dir, dist)
-            h_left_trigram = (head_left, head, child, dir, dist)
-            h_right_trigram = (head, head_right, child, dir, dist)
-            m_left_trigram = (head, child_left, child, dir, dist)
-            m_right_trigram = (head, child, child_right, dir, dist)
-            h_unary_idx = feats.get(h_unary, unknown_idx)
-            m_unary_idx = feats.get(m_unary, unknown_idx)
+                p_left = "STR"
+            if large < len(entries) - 1:
+                p_right = entries[large + 1].pos
+            else:
+                p_right = "END"
+            if small < large - 1:
+                p_left_right = entries[small + 1].pos
+            else:
+                p_left_right = "MID"
+            if large > small + 1:
+                p_right_left = entries[large - 1].pos
+            else:
+                p_right_left = "MID"
+            left_unary = (entries[small].pos, dir, dist)
+            right_unary = (entries[large].pos, dir, dist)
+            binary = (entries[small].pos, entries[large].pos, dir, dist)
+            h_left_trigram = (entries[small].pos, p_left, entries[large].pos, dir, dist)
+            h_right_trigram = (entries[small].pos, p_left_right, entries[large].pos, dir, dist)
+            m_left_trigram = (entries[small].pos, entries[large].pos, p_right_left, dir, dist)
+            m_right_trigram = (entries[small].pos, entries[large].pos, p_right, dir, dist)
+            h_unary_idx = feats.get(left_unary, unknown_idx)
+            m_unary_idx = feats.get(right_unary, unknown_idx)
             binary_idx = feats.get(binary, unknown_idx)
             h_left_trigram_idx = feats.get(h_left_trigram, unknown_idx)
             h_right_trigram_idx = feats.get(h_right_trigram, unknown_idx)
@@ -731,3 +725,198 @@ def construct_feats(feats, s):
             head_feature.append(single_feature)
         feature_list.append(head_feature)
     return feature_list
+
+
+def get_state_code(i, j, k):
+    return i * 4 + j * 2 + k
+
+
+def is_valid_signature(sig):
+    left_index, _, right_index, _, bL, bR, is_simple = sig
+    if left_index == 0 and bL:
+        return 0
+    if right_index - left_index == 1:
+        if is_simple:
+            if bL and bR:
+                return 0
+            else:
+                return 1
+        else:
+            return 0
+
+    if bL and bR and is_simple:
+        return 0
+    return (bL == is_simple) or (bR == is_simple)
+
+
+@memoize
+def constituent_indexes(sent_len, is_multi_root=True):
+    seed_spans = []
+    base_left_spans = []
+    crt_id = 0
+    id_span_map = {}
+
+    for left_index in range(sent_len):
+        for right_index in range(left_index + 1, sent_len):
+            for c in range(8):
+                id_span_map[crt_id] = (left_index, right_index, c)
+                crt_id += 1
+
+    span_id_map = {v: k for k, v in id_span_map.items()}
+
+    for i in range(1, sent_len):
+        ids = span_id_map[(i - 1, i, get_state_code(0, 0, 1))]
+        seed_spans.append(ids)
+
+        ids = span_id_map[(i - 1, i, get_state_code(0, 1, 1))]
+        base_left_spans.append(ids)
+
+    base_right_spans = []
+    for i in range(2, sent_len):
+        ids = span_id_map[(i - 1, i, get_state_code(1, 0, 1))]
+        base_right_spans.append(ids)
+
+    ijss = []
+    ikss = [[] for _ in range(crt_id)]
+    kjss = [[] for _ in range(crt_id)]
+
+    left_spans = set()
+    right_spans = set()
+
+    for length in range(2, sent_len):
+        for i in range(1, sent_len - length + 1):
+            j = i + length
+            for (bl, br) in list(itertools.product([0, 1], repeat=2)):
+                ids = span_id_map[(i - 1, j - 1, get_state_code(bl, br, 0))]
+
+                for (b, s) in list(itertools.product([0, 1], repeat=2)):
+                    for k in range(i + 1, j):
+                        sig_left = (i - 1, None, k - 1, None, bl, b, 1)
+                        sig_right = (k - 1, None, j - 1, None, 1 - b, br, s)
+
+                        if is_valid_signature(sig_left) and is_valid_signature(sig_right):
+                            if is_multi_root or ((i > 1) or (
+                                                    (i == 1) and (j == sent_len) and (bl == 0) and (b == 1) and (
+                                                br == 1)) or ((i == 1) and (k == 2) and (bl == 0) and (b == 0) and (
+                                        br == 0))):
+                                ids1 = span_id_map[(i - 1, k - 1, get_state_code(bl, b, 1))]
+                                ikss[ids].append(ids1)
+                                ids2 = span_id_map[(k - 1, j - 1, get_state_code(1 - b, br, s))]
+                                kjss[ids].append(ids2)
+                if len(ikss[ids]) >= 1:
+                    ijss.append(ids)
+
+            ids = span_id_map[(i - 1, j - 1, get_state_code(0, 1, 1))]
+            ijss.append(ids)
+            left_spans.add(ids)
+            if i != 1:
+                ids = span_id_map[(i - 1, j - 1, get_state_code(1, 0, 1))]
+                ijss.append(ids)
+                right_spans.add(ids)
+
+    return seed_spans, base_left_spans, base_right_spans, left_spans, right_spans, ijss, ikss, kjss, id_span_map, span_id_map
+
+
+def decoding_batch(weights, is_multi_root=True):
+    batch_size, sentence_len, tags_dim, _, _ = weights.shape
+    inside_table = np.empty(
+        (batch_size, sentence_len * sentence_len * 8, tags_dim, tags_dim),
+        dtype=np.float64)
+    inside_table.fill(-np.inf)
+    seed_spans, base_left_spans, base_right_spans, left_spans, right_spans, ijss, ikss, kjss, id_span_map, span_id_map = constituent_indexes(
+        sentence_len, is_multi_root)
+    kbc = np.empty_like(inside_table, dtype=int)
+
+    for ii in seed_spans:
+        inside_table[:, ii, :, :] = 0.0
+        kbc[:, ii, :, :] = -1
+
+    for ii in base_right_spans:
+        (l, r, c) = id_span_map[ii]
+        swap_weights = np.swapaxes(weights, 2, 4)
+        inside_table[:, ii, :, :] = swap_weights[:, r, :, l, :]
+        kbc[:, ii, :, :] = -1
+
+    for ii in base_left_spans:
+        (l, r, c) = id_span_map[ii]
+        inside_table[:, ii, :, :] = weights[:, l, :, r, :]
+        kbc[:, ii, :, :] = -1
+
+    for ij in ijss:
+        (l, r, c) = id_span_map[ij]
+        if ij in left_spans:
+            ids = span_id_map.get((l, r, get_state_code(0, 0, 0)), -1)
+            prob = inside_table[:, ids, :, :] + weights[:, l, :, r, :]
+            inside_table[:, ij, :, :] = np.logaddexp(inside_table[:, ij, :, :], prob)
+        elif ij in right_spans:
+            ids = span_id_map.get((l, r, get_state_code(0, 0, 0)), -1)
+            swap_weights = np.swapaxes(weights, 2, 4)
+            prob = inside_table[:, ids, :, :] + swap_weights[:, r, :, l, :]
+            inside_table[:, ij, :, :] = np.logaddexp(inside_table[:, ij, :, :], prob)
+        else:
+            num_k = len(ikss[ij])
+            beta_ik, beta_kj = inside_table[:, ikss[ij], :, :], inside_table[:, kjss[ij], :, :]
+            probs = beta_ik.reshape(batch_size, num_k, tags_dim, tags_dim, 1) + \
+                    beta_kj.reshape(batch_size, num_k, 1, tags_dim, tags_dim)
+
+            probs = probs.transpose(0, 2, 4, 1, 3).reshape(batch_size, tags_dim, tags_dim, -1)
+            inside_table[:, ij, :, :] = np.max(probs, axis=3)
+            kbc[:, ij, :, :] = np.argmax(probs, axis=3)
+
+    id1 = span_id_map.get((0, sentence_len - 1, get_state_code(0, 1, 0)), -1)
+    id2 = span_id_map.get((0, sentence_len - 1, get_state_code(0, 1, 1)), -1)
+
+    score1 = inside_table[:, id1, 0, :].reshape(batch_size, 1, tags_dim)
+    score2 = inside_table[:, id2, 0, :].reshape(batch_size, 1, tags_dim)
+
+    root_prob1 = np.max(score1, axis=2)
+    root_prob2 = np.max(score2, axis=2)
+
+    best_latest_tag1 = np.argmax(score1, axis=2)
+    best_latest_tag2 = np.argmax(score2, axis=2)
+
+    root_prob = np.maximum(root_prob1, root_prob2)
+    mask = np.equal(root_prob, root_prob1)
+    best_latest_tag = best_latest_tag2
+    best_latest_tag[mask] = best_latest_tag1[mask]
+
+    root_id = np.empty((batch_size, 1), dtype=int)
+    root_id.fill(id2)
+    root_id[mask] = id1
+
+    best_tags = back_trace_batch(kbc, best_latest_tag, root_id, sentence_len, tags_dim, is_multi_root)
+
+    return root_prob, best_tags
+
+
+def back_trace_batch(kbc, best_latest_tag, root_id, sentence_len, tags_dim, is_multi_root=True):
+    seed_spans, base_left_spans, base_right_spans, left_spans, right_spans, ijss, ikss, kjss, id_span_map, span_id_map = constituent_indexes(
+        sentence_len, is_multi_root)
+    batch_size, num_ctt, _, _ = kbc.shape
+    in_tree = np.full((batch_size, num_ctt), -1)
+    best_tags = np.full((batch_size, sentence_len), -1)
+    best_tags[:, sentence_len - 1] = best_latest_tag[:, 0]
+    best_tags[:, 0] = 0  # ROOT can only be 0
+    for sent_id in range(batch_size):
+        current_sent_root_id = root_id[sent_id][0]
+        in_tree[sent_id, current_sent_root_id] = 1
+        for ij in reversed(ijss):
+            non = in_tree[sent_id, ij]
+            (l, r, c) = id_span_map[ij]
+            if non != -1:
+                if ij in left_spans:
+                    ids = span_id_map.get((l, r, get_state_code(0, 0, 0)), -1)
+                    in_tree[sent_id, ids] = 1
+                elif ij in right_spans:
+                    ids = span_id_map.get((l, r, get_state_code(0, 0, 0)), -1)
+                    in_tree[sent_id, ids] = 1
+                else:
+                    num_k = len(ikss[ij])
+                    iks, kjs = ikss[ij], kjss[ij]
+                    k, tag = np.unravel_index(kbc[sent_id, ij, best_tags[sent_id, l], best_tags[sent_id, r]],
+                                              (num_k, tags_dim))
+                    in_tree[sent_id, iks[k]] = 1
+                    in_tree[sent_id, kjs[k]] = 1
+                    (ll, lr, lc) = id_span_map[iks[k]]
+                    best_tags[sent_id, lr] = tag
+    return best_tags
