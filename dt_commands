@@ -1,1 +1,1 @@
-python dt_parser.py --train data/toy_test --model output/neuralfirstorder.model1 --epoch 5 --paramdec paramdec.pickle1 --predict
+dt_pl_parser.py --model output/neuralfirstorder.model --paramdec paramdec.pickle --e_pass 2 --d_pass 2 --tag_num 1 --tag_dim 1 --epoch 10 --do_eval --lr 0.001 --train data/wsj10_tr --batch 100 --prior_weight 6.0 --optim adam --sample_idx 10 --use_trigram 
